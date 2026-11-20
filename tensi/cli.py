@@ -245,6 +245,14 @@ def cmd_check(paths: list[str], show_all: bool, solve_seeds: bool) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except BrokenPipeError:  # `tensi peek model.py | head`: the reader left; stop quietly
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 1
+
+
+def _main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="tensi", description="tensi: see your tensors. Named shapes for PyTorch, on Pyrefly."
     )

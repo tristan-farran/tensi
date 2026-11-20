@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+* Marketplace page: a demo of the hovers, and better search keywords.
+
 ## 0.3.1
 
 * Prefers the project's own `.venv` over a global interpreter the Python extension happens to have

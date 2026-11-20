@@ -202,11 +202,12 @@ def run(folder: str | None = None) -> int:
     else:
         r.fail("probe: Pyrefly produced no result", raw.strip()[:400] or "run pyrefly check by hand")
 
-    # 5. The editor launches `tensi lsp`
-    if shutil.which("tensi") is None:
+    # 5. The VS Code extension runs `<project python> -m tensi lsp`, else a global `tensi`
+    in_project = interp is not None and (_prefix(interp) == sys.prefix or _has_module(interp, "tensi"))
+    if not in_project and shutil.which("tensi") is None:
         r.warn(
-            "`tensi` is not on PATH; the VS Code extension won't find it",
-            "add the folder with the tensi script to PATH, or set tensi.path in VS Code settings",
+            "tensi is neither in this project's environment nor on PATH; the VS Code extension won't find it",
+            "`uv add --dev tensi-shapes` in the project, or `uv tool install tensi-shapes` once",
         )
 
     print()

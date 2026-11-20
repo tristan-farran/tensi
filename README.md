@@ -7,16 +7,11 @@
   Hover any PyTorch tensor and see its shape, with every dimension named.
 </p>
 
----
+<p align="center">
+  <img src="https://raw.githubusercontent.com/tristan-farran/tensi/main/docs/demo.gif" alt="tensi showing named tensor shapes in nanoGPT">
+</p>
 
-```python
-def forward(self, x):
-    B, T, C = x.size()
-    q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-    k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-    #   hover k → Tensor[[b, n_head, t, n_embd // n_head]]
-```
-
+**Install:** search **tensi** in VS Code's Extensions view, open a PyTorch project, hover a tensor.
 
 ## Install
 
@@ -44,7 +39,7 @@ einops included.
 
 ```console
 $ tensi peek model.py
-tensi peek v0.3.0  model.py  2.0s
+tensi peek v0.3.2  model.py  2.0s
 
   CausalSelfAttention.forward
     56  q, k, v   [b, t, n_embd]
@@ -66,11 +61,11 @@ tensi peek v0.3.0  model.py  2.0s
 
 ```console
 $ tensi check model.py
-tensi check v0.3.0  model.py  2.0s
+tensi check v0.3.2  model.py  2.0s
   ok no shape errors
 
 $ tensi check bad.py
-tensi check v0.3.0  bad.py  819ms
+tensi check v0.3.2  bad.py  819ms
   x bad.py:17:9  Argument `Tensor[[b, 7, v]]` is not assignable to parameter `x` with type `Tensor[[b, 7, d]]` in function `Block.forward`
   x bad.py:18:9  `@` is not supported between `Tensor[[b, d]]` and `Tensor[[v, 3]]`
 

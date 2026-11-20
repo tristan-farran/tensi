@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+* `tensi doctor` no longer warns that tensi is missing from the project when it is installed there.
+* `tensi peek | head` and similar pipes exit quietly instead of printing a traceback.
+* README: demo and a one-line install at the top.
+
 ## 0.3.1
 
 * Works on projects on any Python from 3.10. tensi's rewritten code uses newer type-parameter syntax,

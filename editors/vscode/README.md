@@ -3,13 +3,7 @@
 **Hover any PyTorch tensor and see its shape, with every dimension named after the variable that sized it.**
 No annotations needed, and your files are never modified.
 
-```python
-def forward(self, x):
-    B, T, C = x.size()
-    q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-    k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-    #   hover k → Tensor[[b, n_head, t, n_embd // n_head]]
-```
+![tensi showing named tensor shapes in nanoGPT](https://raw.githubusercontent.com/tristan-farran/tensi/main/docs/demo.gif)
 
 That's nanoGPT, unmodified. tensi works out that `config.n_embd` is a dimension and follows `x` in from
 the modules that call it. Shape errors are underlined in place, in the same names:

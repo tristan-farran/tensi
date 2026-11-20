@@ -2,7 +2,7 @@
   "name": "tensi",
   "displayName": "tensi",
   "description": "Hover any PyTorch tensor to see its shape, with every dimension named after the variable that sized it. Shape errors underlined. No annotations needed.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "TristanFarran",
   "license": "MIT",
   "engines": {
@@ -90,21 +90,12 @@
     "@vscode/vsce": "3.2.1"
   },
   "icon": "images/icon.png",
+  "pricing": "Free",
   "galleryBanner": {
     "color": "#EEEAFF",
     "theme": "light"
   },
-  "keywords": [
-    "pytorch",
-    "tensor",
-    "shape",
-    "shapes",
-    "torch",
-    "jaxtyping",
-    "einops",
-    "pyrefly",
-    "deep learning"
-  ],
+  "keywords": ["pytorch", "torch", "tensor", "tensor shapes", "pytorch shapes", "shape checking", "shape errors", "named dimensions", "hover", "type checking", "jaxtyping", "einops", "pyrefly", "deep learning", "machine learning", "nanogpt"],
   "author": {
     "name": "Tristan Farran"
   },
