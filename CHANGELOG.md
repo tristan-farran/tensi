@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3
+
+* No changes to the Python package; released alongside the VS Code extension.
+
 ## 0.3.2
 
 * `tensi doctor` no longer warns that tensi is missing from the project when it is installed there.

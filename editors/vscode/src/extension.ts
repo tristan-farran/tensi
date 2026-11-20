@@ -10,6 +10,8 @@ let output: vscode.OutputChannel;
 let status: vscode.StatusBarItem;
 let running = ""; // what the current server was started with, so a no-op change doesn't restart it
 const warned = new Set<string>(); // one warning per problem per session
+let extensionVersion = "0.0.0";
+const versions = new Map<string, string>(); // tensi command -> the version it reported
 
 const WIN = process.platform === "win32";
 const BIN = WIN ? "Scripts" : "bin";
@@ -161,6 +163,7 @@ async function tensiCommand(python: string | undefined, verbose: boolean): Promi
       output.appendLine(`${cmd.join(" ")} --version: ${probe.ok ? probe.out : `not usable (${probe.out.split("\n").pop()})`}`);
     }
     if (probe.ok) {
+      versions.set(cmd.join(" "), probe.out.trim().split(/\s+/).pop() ?? "");
       return cmd;
     }
   }
@@ -241,6 +244,83 @@ async function offerInstall(python: string | undefined): Promise<boolean> {
   return false;
 }
 
+/** Whether version `a` is older than `b` (plain x.y.z). */
+function older(a: string, b: string): boolean {
+  const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) {
+      return (pa[i] ?? 0) < (pb[i] ?? 0);
+    }
+  }
+  return false;
+}
+
+/** The command that upgrades the tensi that `cmd` runs, in place. */
+function updateCommand(cmd: string[], python: string | undefined): string[] | undefined {
+  const uv = which("uv");
+  const root = folder();
+  if (cmd.length === 1) {
+    // a global tensi: pipx if pipx installed it, else uv tool
+    let real = cmd[0];
+    try {
+      real = fs.realpathSync(cmd[0]);
+    } catch {
+      // keep the path as found
+    }
+    const pipx = which("pipx");
+    if (pipx && real.includes("pipx")) {
+      return [pipx, "upgrade", "tensi-shapes"];
+    }
+    return uv ? [uv, "tool", "install", "--upgrade", "tensi-shapes"] : undefined;
+  }
+  if (uv && root && python && inside(root, python) && fs.existsSync(path.join(root, "uv.lock"))) {
+    return [uv, "add", "--dev", "--upgrade-package", "tensi-shapes", "tensi-shapes"];
+  }
+  if (uv && python) {
+    return [uv, "pip", "install", "--upgrade", "--python", python, "tensi-shapes"];
+  }
+  return python ? [python, "-m", "pip", "install", "--upgrade", "tensi-shapes"] : undefined;
+}
+
+/** tensi older than this extension (a stale global install, say): offer to update it once per session. */
+async function offerUpdate(cmd: string[], python: string | undefined): Promise<void> {
+  const have = versions.get(cmd.join(" ")) ?? "";
+  if (!have || !older(have, extensionVersion) || warned.has(`update ${cmd.join(" ")}`)) {
+    return;
+  }
+  warned.add(`update ${cmd.join(" ")}`);
+  const up = updateCommand(cmd, python);
+  output.appendLine(`tensi ${have} is older than this extension (${extensionVersion}).`);
+  if (!up) {
+    return;
+  }
+  const where = cmd.length === 1 ? "installed for all projects" : "in this project";
+  const pick = await vscode.window.showInformationMessage(
+    `The tensi ${where} is ${have}; this extension expects ${extensionVersion}. Update it?`,
+    "Update tensi",
+  );
+  if (pick !== "Update tensi") {
+    return;
+  }
+  const ok = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Updating tensi…" },
+    async () => {
+      output.appendLine(`$ ${up.join(" ")}`);
+      const res = await run(up[0], up.slice(1), envFor(python), folder());
+      output.appendLine(res.out);
+      return res.ok;
+    },
+  );
+  if (ok) {
+    running = "";
+    void restart();
+  } else {
+    output.show(true);
+    void vscode.window.showErrorMessage("Updating tensi failed; see the tensi output.");
+  }
+}
+
 function setStatus(state: "starting" | "solving" | "ready" | "off", detail = ""): void {
   const icon = { starting: "$(sync~spin)", solving: "$(sync~spin)", ready: "$(symbol-array)", off: "$(warning)" }[state];
   status.text = `${icon} tensi`;
@@ -292,6 +372,7 @@ async function start(): Promise<void> {
   });
   await client.start();
   setStatus("ready", python ? `using ${python}` : "");
+  void offerUpdate(cmd, python);
 }
 
 let restarting: Promise<void> = Promise.resolve();
@@ -351,6 +432,7 @@ async function doctor(): Promise<void> {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("tensi");
+  extensionVersion = String(context.extension.packageJSON.version ?? "0.0.0");
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = "tensi.doctor";
   const changed = debounce(() => void refresh(), 1500);

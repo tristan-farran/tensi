@@ -39,7 +39,7 @@ einops included.
 
 ```console
 $ tensi peek model.py
-tensi peek v0.3.2  model.py  2.0s
+tensi peek v0.3.3  model.py  2.0s
 
   CausalSelfAttention.forward
     56  q, k, v   [b, t, n_embd]
@@ -61,11 +61,11 @@ tensi peek v0.3.2  model.py  2.0s
 
 ```console
 $ tensi check model.py
-tensi check v0.3.2  model.py  2.0s
+tensi check v0.3.3  model.py  2.0s
   ok no shape errors
 
 $ tensi check bad.py
-tensi check v0.3.2  bad.py  819ms
+tensi check v0.3.3  bad.py  819ms
   x bad.py:17:9  Argument `Tensor[[b, 7, v]]` is not assignable to parameter `x` with type `Tensor[[b, 7, d]]` in function `Block.forward`
   x bad.py:18:9  `@` is not supported between `Tensor[[b, d]]` and `Tensor[[v, 3]]`
 

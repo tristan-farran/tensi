@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+* If the tensi it finds is older than the extension (an old global install, say), it offers a one-click
+  **Update tensi** instead of quietly running the old version.
+
 ## 0.3.2
 
 * Marketplace page: a demo of the hovers, and better search keywords.
