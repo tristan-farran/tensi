@@ -46,8 +46,3 @@ diff before.txt after.txt
 ```
 
 A change should not lower any file's "fully named" count or add a `check` error that isn't a real bug.
-
-## Releasing
-
-See [RELEASING.md](RELEASING.md): the one-time setup for a first release, and the three steps for
-every release after it.

@@ -7,7 +7,7 @@ name = "tensi-shapes"
 dynamic = ["version"]
 description = "Named tensor shapes for unannotated PyTorch: hovers, shape errors and a CLI, built on Pyrefly."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Tristan Farran" }]
@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
   "pyrefly==1.5.0",
   "pyrefly-torch-stubs==1.5.0",
-  "pyrefly-einops-stubs==1.5.0; python_version >= '3.12'",
+  "pyrefly-einops-stubs==1.5.0",
   "parso>=0.8.4",
 ]
 

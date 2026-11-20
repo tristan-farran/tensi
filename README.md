@@ -36,7 +36,7 @@ tensi doctor                   # checks Pyrefly, the stubs and the interpreter P
 The package is `tensi-shapes` on PyPI; the command and the import are `tensi`. It brings Pyrefly 1.5.0
 and its torch shape stubs; your project needs `torch` installed.
 
-Any editor that speaks LSP can run `tensi lsp` as a language server for Python files. Python 3.10+;
+Any editor that speaks LSP can run `tensi lsp` as a language server for Python files. Python 3.12+;
 `rearrange` and friends are shape-aware on Python 3.12+ (Pyrefly's einops stubs need it).
 
 ## Try it

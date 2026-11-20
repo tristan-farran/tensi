@@ -58,7 +58,7 @@ shape errors, so nothing is duplicated.
 
 ## Requirements
 
-Python 3.10 or newer with `torch` installed. The same package gives you a CLI: `tensi peek model.py`
+Python 3.12 or newer with `torch` installed. The same package gives you a CLI: `tensi peek model.py`
 lists every tensor's shape, and `tensi check src/` exits 1 on a shape error, for CI.
 
 tensi is built on Pyrefly's experimental tensor-shape support. Source, docs and issues:
