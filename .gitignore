@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+_tensi_tmp_*.py
+
+editors/vscode/node_modules/
+editors/vscode/dist/
+*.vsix
+.DS_Store

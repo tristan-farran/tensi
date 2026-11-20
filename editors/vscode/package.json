@@ -1,0 +1,120 @@
+{
+  "name": "tensi",
+  "displayName": "tensi",
+  "description": "Hover any PyTorch tensor to see its shape, with every dimension named after the variable that sized it. Shape errors underlined. No annotations needed.",
+  "version": "0.3.0",
+  "publisher": "TristanFarran",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Data Science",
+    "Machine Learning"
+  ],
+  "activationEvents": [
+    "onLanguage:python",
+    "workspaceContains:**/*.py"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tensi.restart",
+        "title": "Restart server",
+        "category": "tensi"
+      },
+      {
+        "command": "tensi.doctor",
+        "title": "Check setup",
+        "category": "tensi"
+      }
+    ],
+    "configuration": {
+      "title": "tensi",
+      "properties": {
+        "tensi.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Usually leave empty. tensi then follows the project's interpreter (the one picked in the Python extension, else the project's .venv) and switches when it changes. tensi itself can be installed in that environment (`uv add --dev tensi-shapes`) or once for all projects (`uv tool install tensi-shapes`).",
+          "scope": "resource"
+        },
+        "tensi.hover": {
+          "type": "string",
+          "enum": [
+            "tensors",
+            "all"
+          ],
+          "default": "tensors",
+          "description": "`tensors`: only show hovers that carry a tensor shape (Pylance keeps the rest). `all`: show every Pyrefly hover."
+        },
+        "tensi.diagnostics": {
+          "type": "string",
+          "enum": [
+            "shapes",
+            "all",
+            "off"
+          ],
+          "default": "shapes",
+          "description": "Which Pyrefly diagnostics to show: only tensor-shape errors, all of them, or none."
+        },
+        "tensi.inlayHints": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show inferred tensor shapes inline as inlay hints."
+        },
+        "tensi.shadowWorkspace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mirror rewritten workspace files into a cache folder so shapes survive imports between files."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node18 --minify",
+    "typecheck": "tsc --noEmit -p .",
+    "vscode:prepublish": "npm run build",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "1.82.0",
+    "@types/node": "18.19.0",
+    "esbuild": "0.24.0",
+    "typescript": "5.6.3",
+    "@vscode/vsce": "3.2.1"
+  },
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#EEEAFF",
+    "theme": "light"
+  },
+  "keywords": [
+    "pytorch",
+    "tensor",
+    "shape",
+    "shapes",
+    "torch",
+    "jaxtyping",
+    "einops",
+    "pyrefly",
+    "deep learning"
+  ],
+  "author": {
+    "name": "Tristan Farran"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tristan-farran/tensi.git",
+    "directory": "editors/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/tristan-farran/tensi/issues"
+  },
+  "homepage": "https://github.com/tristan-farran/tensi#readme"
+}

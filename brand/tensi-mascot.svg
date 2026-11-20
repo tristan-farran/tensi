@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256"><g transform="translate(0 0) scale(1.0)">
+  <g stroke="#2B1E3F" stroke-width="9" stroke-linejoin="round" stroke-linecap="round">
+    <polygon points="36,106 172,106 222,56 86,56" fill="#FFF9EE"/>
+    <polygon points="172,106 222,56 222,184 172,234" fill="#F3D3A4"/>
+    <polygon points="36,106 172,106 172,234 36,234" fill="#FFF1D6"/>
+  </g>
+  <g stroke="#7C6CF2" stroke-width="3.2" stroke-linecap="round" opacity=".75">
+    <line x1="81.3" y1="106.0" x2="131.3" y2="56.0"/><line x1="52.7" y1="89.3" x2="188.7" y2="89.3"/><line x1="126.7" y1="106.0" x2="176.7" y2="56.0"/><line x1="69.3" y1="72.7" x2="205.3" y2="72.7"/>
+    <line x1="188.7" y1="89.3" x2="188.7" y2="217.3"/><line x1="172.0" y1="148.7" x2="222.0" y2="98.7"/><line x1="205.3" y1="72.7" x2="205.3" y2="200.7"/><line x1="172.0" y1="191.3" x2="222.0" y2="141.3"/>
+  </g>
+  <g stroke="#2B1E3F" stroke-width="9" stroke-linejoin="round" fill="none">
+    <polygon points="36,106 172,106 222,56 86,56"/><polygon points="172,106 222,56 222,184 172,234"/><polygon points="36,106 172,106 172,234 36,234"/>
+  </g>
+  <ellipse cx="80" cy="164" rx="16" ry="19" fill="#2B1E3F"/><ellipse cx="128" cy="164" rx="16" ry="19" fill="#2B1E3F"/><circle cx="86" cy="156" r="6" fill="#fff"/><circle cx="134" cy="156" r="6" fill="#fff"/><circle cx="75" cy="172" r="2.6" fill="#fff" opacity=".8"/><circle cx="123" cy="172" r="2.6" fill="#fff" opacity=".8"/>
+  <ellipse cx="58" cy="196" rx="12" ry="7" fill="#FF8FA3" opacity=".75"/>
+  <ellipse cx="150" cy="196" rx="12" ry="7" fill="#FF8FA3" opacity=".75"/>
+  <path d="M94 193 q10 11 20 0" fill="none" stroke="#2B1E3F" stroke-width="6" stroke-linecap="round"/>
+  <path d="M236 20 l4 10 l10 4 l-10 4 l-4 10 l-4 -10 l-10 -4 l10 -4 z" fill="#7C6CF2"/>
+</g></svg>

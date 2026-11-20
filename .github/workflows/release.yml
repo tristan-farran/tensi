@@ -1,0 +1,55 @@
+name: Release
+
+# Push a tag like v0.3.0 (matching tensi/__init__.py and editors/vscode/package.json) to publish
+# the Python package to PyPI and the extension to the VS Code Marketplace (and Open VSX if configured).
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # PyPI trusted publishing: no token stored in the repo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the tag matches the version
+        run: test "v$(python -c 'import tensi; print(tensi.__version__)')" = "${GITHUB_REF_NAME}"
+      - run: pip install build && python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  vscode:
+    needs: pypi  # the extension installs tensi from PyPI, so publish that first
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check the tag matches the version
+        run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - run: npm ci
+      - run: npm run package
+      - name: Publish to the VS Code Marketplace
+        run: npx vsce publish --no-dependencies --packagePath *.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      - name: Publish to Open VSX
+        if: ${{ env.OVSX_PAT != '' }}
+        run: npx --yes ovsx publish *.vsix
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: editors/vscode/*.vsix
+          generate_release_notes: true
