@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import pyrefly, stubs
+from . import env, pyrefly, stubs
 
 PYREFLY_VERSION = "1.5.0"
 PROBE = """import torch
@@ -55,21 +55,8 @@ def _scratch(folder: Path) -> tuple[int, str, Path]:
 
 
 def pyrefly_interpreter(folder: Path) -> str | None:
-    """The Python interpreter Pyrefly picks for files in `folder` (from `pyrefly dump-config`)."""
-    fd, tmp, cwd = _scratch(folder)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("import torch\n")
-        out = subprocess.run([pyrefly(), "dump-config", tmp], capture_output=True, text=True, cwd=cwd, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-    m = re.search(r"Using interpreter: (.+)", out.stdout + out.stderr)
-    return m.group(1).strip() if m else None
+    """The Python interpreter Pyrefly picks for files in `folder`."""
+    return env.interpreter(env.project_root(folder))
 
 
 def _prefix(interpreter: str) -> str | None:
@@ -182,6 +169,13 @@ def run(folder: str | None = None) -> int:
             f"Pyrefly uses {interp}",
             "same as tensi's" if _prefix(interp) == sys.prefix else f"tensi runs on {sys.executable}",
         )
+        v = env.interpreter_version(interp)
+        if v and v < env.MIN_VERSION:
+            r.ok(
+                f"project Python {v[0]}.{v[1]}",
+                f"tensi has Pyrefly read it as {env.analysis_version(env.project_root(where))} for its own syntax; "
+                "packages still come from this interpreter",
+            )
         if _has_module(interp, "torch") is False:
             # tensi's overlay carries the shape stubs, so shapes still work; torch's other types don't
             r.warn(
@@ -193,7 +187,7 @@ def run(folder: str | None = None) -> int:
         if uses_einops and not (stubs.overlay_dir() and (stubs.overlay_dir() / "einops-shape-stubs").is_dir()):
             r.warn(
                 "einops is installed but its shape stubs are not; rearrange/repeat results are unshaped",
-                "pip install 'pyrefly-einops-stubs==1.5.0' (tensi installs it; this environment lacks it)",
+                "reinstall tensi: it ships these stubs",
             )
 
     # 4. One real probe, the way `tensi check` and the editor run Pyrefly

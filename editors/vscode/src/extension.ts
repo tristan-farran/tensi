@@ -7,12 +7,32 @@ import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-lan
 
 let client: LanguageClient | undefined;
 let output: vscode.OutputChannel;
+let status: vscode.StatusBarItem;
 let running = ""; // what the current server was started with, so a no-op change doesn't restart it
+const warned = new Set<string>(); // one warning per problem per session
 
 const WIN = process.platform === "win32";
+const BIN = WIN ? "Scripts" : "bin";
+const PY = WIN ? "python.exe" : "python";
 
 function folder(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
+function inside(root: string | undefined, p: string): boolean {
+  if (!root) {
+    return false;
+  }
+  const rel = path.relative(root, p);
+  return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+function warnOnce(key: string, message: string): void {
+  output.appendLine(message);
+  if (!warned.has(key)) {
+    warned.add(key);
+    void vscode.window.showWarningMessage(message);
+  }
 }
 
 /** A project's own virtualenv, as `uv sync`, `poetry` (in-project) or `python -m venv .venv` make it. */
@@ -21,37 +41,58 @@ function projectVenvPython(): string | undefined {
   if (!root) {
     return undefined;
   }
-  for (const dir of [".venv", "venv"]) {
-    const py = path.join(root, dir, WIN ? "Scripts" : "bin", WIN ? "python.exe" : "python");
-    if (fs.existsSync(py)) {
+  for (const dir of [".venv", "venv", "env"]) {
+    const py = path.join(root, dir, BIN, PY);
+    if (fs.existsSync(py) && fs.existsSync(path.join(root, dir, "pyvenv.cfg"))) {
       return py;
     }
   }
   return undefined;
 }
 
-/** The project's interpreter: `tensi.pythonPath`, else the Python extension's choice, else `.venv`. */
+/** The Python extension's interpreter for this folder, if it has one installed and picked. */
+async function pythonExtensionChoice(): Promise<string | undefined> {
+  const ext = vscode.extensions.getExtension("ms-python.python");
+  if (!ext) {
+    return undefined;
+  }
+  try {
+    const api = await ext.activate();
+    const envs = api?.environments;
+    const active = envs?.getActiveEnvironmentPath(vscode.workspace.workspaceFolders?.[0]?.uri);
+    const env = active ? await envs.resolveEnvironment(active) : undefined;
+    const py = env?.executable?.uri?.fsPath ?? active?.path;
+    return py && path.isAbsolute(py) && fs.existsSync(py) ? py : undefined;
+  } catch (err) {
+    output.appendLine(`Could not ask the Python extension for an interpreter: ${err}`);
+    return undefined;
+  }
+}
+
+/**
+ * The project's interpreter, which decides where torch and the project's packages come from:
+ * 1. `tensi.pythonPath`, if it is set and exists (a stale path is reported and skipped);
+ * 2. the project's own `.venv` / `venv`, what `uv sync` or `python -m venv` made for this folder;
+ * 3. the Python extension's pick (a global Homebrew or system Python only when there is no venv).
+ */
 async function interpreter(): Promise<string | undefined> {
   const configured = vscode.workspace.getConfiguration("tensi").get<string>("pythonPath", "").trim();
   if (configured) {
-    return configured;
-  }
-  const ext = vscode.extensions.getExtension("ms-python.python");
-  if (ext) {
-    try {
-      const api = await ext.activate();
-      const envs = api?.environments;
-      const active = envs?.getActiveEnvironmentPath(vscode.workspace.workspaceFolders?.[0]?.uri);
-      const env = active ? await envs.resolveEnvironment(active) : undefined;
-      const py = env?.executable?.uri?.fsPath ?? active?.path;
-      if (py && path.isAbsolute(py)) {
-        return py;
-      }
-    } catch (err) {
-      output.appendLine(`Could not ask the Python extension for an interpreter: ${err}`);
+    if (fs.existsSync(configured)) {
+      return configured;
     }
+    warnOnce(
+      `pythonPath:${configured}`,
+      `tensi: the "tensi.pythonPath" setting points to ${configured}, which doesn't exist. ` +
+        "tensi ignores it and uses the project's environment; clear the setting to stop this warning.",
+    );
   }
-  return projectVenvPython();
+  const venv = projectVenvPython();
+  const picked = await pythonExtensionChoice();
+  if (picked && (inside(folder(), picked) || !venv)) {
+    return picked;
+  }
+  return venv ?? picked;
 }
 
 /** An executable on PATH or in the usual per-user tool folders (a GUI-launched editor often lacks them). */
@@ -72,16 +113,21 @@ function which(name: string): string | undefined {
 }
 
 /**
- * Environment for the server. The project's interpreter goes first on PATH and in VIRTUAL_ENV, so
- * Pyrefly resolves torch and the project's own packages there, even when tensi itself is a global
- * tool (`uv tool install tensi-shapes`).
+ * Environment for the server. The project's interpreter goes first on PATH, and in VIRTUAL_ENV when
+ * it lives in a virtualenv, so Pyrefly resolves torch and the project's own packages there, even
+ * when tensi itself is a global tool (`uv tool install tensi-shapes`).
  */
 function envFor(python: string | undefined): NodeJS.ProcessEnv {
   const env = { ...process.env };
   if (python && path.isAbsolute(python)) {
     const bin = path.dirname(python);
     env.PATH = bin + path.delimiter + (env.PATH ?? "");
-    env.VIRTUAL_ENV = path.dirname(bin);
+    const prefix = path.dirname(bin);
+    if (fs.existsSync(path.join(prefix, "pyvenv.cfg"))) {
+      env.VIRTUAL_ENV = prefix;
+    } else {
+      delete env.VIRTUAL_ENV; // a system Python: let Pyrefly find the project's own
+    }
   }
   return env;
 }
@@ -89,7 +135,8 @@ function envFor(python: string | undefined): NodeJS.ProcessEnv {
 function run(cmd: string, args: string[], env: NodeJS.ProcessEnv, cwd?: string): Promise<{ ok: boolean; out: string }> {
   return new Promise((resolve) => {
     execFile(cmd, args, { env, cwd, timeout: 600_000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve({ ok: !err, out: `${stdout}${stderr}`.trim() });
+      const out = `${stdout}${stderr}`.trim();
+      resolve({ ok: !err, out: out || (err ? err.message : "") });
     });
   });
 }
@@ -98,7 +145,7 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv, cwd?: string):
  * How to run tensi for this project: from the project's own environment if tensi is installed there,
  * else a global `tensi` (uv tool, pipx). Undefined when neither exists.
  */
-async function tensiCommand(python: string | undefined): Promise<string[] | undefined> {
+async function tensiCommand(python: string | undefined, verbose: boolean): Promise<string[] | undefined> {
   const env = envFor(python);
   const candidates: string[][] = [];
   if (python) {
@@ -110,7 +157,9 @@ async function tensiCommand(python: string | undefined): Promise<string[] | unde
   }
   for (const cmd of candidates) {
     const probe = await run(cmd[0], [...cmd.slice(1), "--version"], env);
-    output.appendLine(`${cmd.join(" ")} --version: ${probe.out || "(no output)"}`);
+    if (verbose) {
+      output.appendLine(`${cmd.join(" ")} --version: ${probe.ok ? probe.out : `not usable (${probe.out.split("\n").pop()})`}`);
+    }
     if (probe.ok) {
       return cmd;
     }
@@ -118,18 +167,64 @@ async function tensiCommand(python: string | undefined): Promise<string[] | unde
   return undefined;
 }
 
-async function offerInstall(python: string | undefined): Promise<boolean> {
+/** The install command that puts tensi where this project's interpreter will find it. */
+function installCommand(python: string | undefined, root: string | undefined): { cmd: string[]; where: string } | undefined {
   const uv = which("uv");
+  if (python) {
+    const inProject = inside(root, python);
+    if (uv && root && inProject && fs.existsSync(path.join(root, "uv.lock"))) {
+      // recorded in pyproject.toml as a dev dependency, so `uv sync` keeps it
+      return { cmd: [uv, "add", "--dev", "tensi-shapes"], where: "this project (uv add --dev)" };
+    }
+    if (uv) {
+      return { cmd: [uv, "pip", "install", "--python", python, "tensi-shapes"], where: "this project's environment" };
+    }
+    return { cmd: [python, "-m", "pip", "install", "tensi-shapes"], where: "this project's environment" };
+  }
+  if (uv) {
+    return { cmd: [uv, "tool", "install", "--upgrade", "tensi-shapes"], where: "all projects (uv tool)" };
+  }
+  return undefined;
+}
+
+async function install(python: string | undefined, global: boolean): Promise<boolean> {
   const root = folder();
-  const uvProject = !!(uv && root && fs.existsSync(path.join(root, "uv.lock")));
-  const here = "Add to this project";
+  const uv = which("uv");
+  const plan = global
+    ? uv
+      ? { cmd: [uv, "tool", "install", "--upgrade", "tensi-shapes"], where: "all projects (uv tool)" }
+      : undefined
+    : installCommand(python, root);
+  if (!plan) {
+    output.show(true);
+    output.appendLine("tensi: no way to install found. Install uv (https://docs.astral.sh/uv/) and reload the window.");
+    void vscode.window.showErrorMessage("tensi needs uv or pip to install itself. See the tensi output.");
+    return false;
+  }
+  return vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: `Installing tensi for ${plan.where}…` },
+    async () => {
+      output.appendLine(`$ ${plan.cmd.join(" ")}`);
+      const res = await run(plan.cmd[0], plan.cmd.slice(1), envFor(python), root);
+      output.appendLine(res.out);
+      if (!res.ok) {
+        output.show(true);
+        void vscode.window.showErrorMessage("Installing tensi failed; see the tensi output for the command and its error.");
+      }
+      return res.ok;
+    },
+  );
+}
+
+async function offerInstall(python: string | undefined): Promise<boolean> {
+  const here = "Install tensi";
   const everywhere = "Install for all projects";
   const choose = "Choose interpreter";
-  const actions = [...(python ? [here] : []), ...(uv ? [everywhere] : []), choose];
-  const pick = await vscode.window.showWarningMessage(
+  const actions = [...(python ? [here] : []), ...(which("uv") ? [everywhere] : []), choose];
+  const pick = await vscode.window.showInformationMessage(
     python
-      ? `tensi isn't installed for this project (${python}).`
-      : "tensi found no Python environment for this project. Pick an interpreter, or create one with `uv sync`.",
+      ? `tensi shows tensor shapes on hover. Install it for this project (${python})?`
+      : "tensi found no Python environment for this project. Create one (for example with `uv sync`), or pick an interpreter.",
     ...actions,
   );
   if (pick === choose) {
@@ -140,48 +235,39 @@ async function offerInstall(python: string | undefined): Promise<boolean> {
     );
     return false;
   }
-  let cmd: string[];
-  if (pick === here && python) {
-    if (uvProject && uv) {
-      cmd = [uv, "add", "--dev", "tensi-shapes"]; // recorded in pyproject.toml, so `uv sync` keeps it
-    } else if (uv) {
-      cmd = [uv, "pip", "install", "--python", python, "tensi-shapes"]; // uv venvs have no pip
-    } else {
-      cmd = [python, "-m", "pip", "install", "--upgrade", "tensi-shapes"];
-    }
-  } else if (pick === everywhere && uv) {
-    cmd = [uv, "tool", "install", "--upgrade", "tensi-shapes"];
-  } else {
-    return false;
+  if (pick === here || pick === everywhere) {
+    return install(python, pick === everywhere);
   }
-  return vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Installing tensi…" },
-    async () => {
-      output.appendLine(`$ ${cmd.join(" ")}`);
-      const res = await run(cmd[0], cmd.slice(1), envFor(python), root);
-      output.appendLine(res.out);
-      if (!res.ok) {
-        output.show(true);
-        vscode.window.showErrorMessage("Installing tensi failed; see the tensi output for details.");
-      }
-      return res.ok;
-    },
-  );
+  return false;
+}
+
+function setStatus(state: "starting" | "solving" | "ready" | "off", detail = ""): void {
+  const icon = { starting: "$(sync~spin)", solving: "$(sync~spin)", ready: "$(symbol-array)", off: "$(warning)" }[state];
+  status.text = `${icon} tensi`;
+  status.tooltip = {
+    starting: "tensi is starting",
+    solving: `tensi is working out shapes${detail ? ` in ${detail}` : ""}; hovers fill in when it's done`,
+    ready: `tensi is ready${detail ? `: ${detail}` : ""}. Click to check the setup.`,
+    off: `tensi is not running${detail ? `: ${detail}` : ""}. Click to check the setup.`,
+  }[state];
+  status.show();
 }
 
 async function start(): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("tensi");
+  setStatus("starting");
   const python = await interpreter();
-  let cmd = await tensiCommand(python);
+  let cmd = await tensiCommand(python, true);
   if (!cmd && (await offerInstall(python))) {
-    cmd = await tensiCommand(python);
+    cmd = await tensiCommand(python, true);
   }
   if (!cmd) {
     output.appendLine("tensi is not running: it isn't installed for this project or globally.");
+    setStatus("off", "not installed");
     running = "";
     return;
   }
-  output.appendLine(`Starting tensi: ${cmd.join(" ")} lsp  (project interpreter: ${python ?? "none"})`);
+  output.appendLine(`Starting tensi: ${cmd.join(" ")} lsp  (project interpreter: ${python ?? "none found"})`);
   running = JSON.stringify([cmd, python]);
   const serverOptions: ServerOptions = {
     command: cmd[0],
@@ -200,7 +286,12 @@ async function start(): Promise<void> {
     outputChannel: output,
   };
   client = new LanguageClient("tensi", "tensi", serverOptions, clientOptions);
+  client.onNotification("$/tensi/status", (p: { uri?: string; state?: string }) => {
+    const name = p.uri ? path.basename(vscode.Uri.parse(p.uri).fsPath) : "";
+    setStatus(p.state === "solving" ? "solving" : "ready", name);
+  });
   await client.start();
+  setStatus("ready", python ? `using ${python}` : "");
 }
 
 let restarting: Promise<void> = Promise.resolve();
@@ -215,7 +306,8 @@ function restart(): Promise<void> {
       await start();
     } catch (err) {
       output.appendLine(`tensi could not start: ${err}`);
-      vscode.window.showErrorMessage(`tensi could not start: ${err}. Run "tensi: Check setup" for details.`);
+      setStatus("off", String(err));
+      void vscode.window.showErrorMessage(`tensi could not start: ${err}. Run "tensi: Check setup" for details.`);
     }
   });
   return restarting;
@@ -224,8 +316,9 @@ function restart(): Promise<void> {
 /** Restart only if the project's interpreter or tensi's location actually changed. */
 async function refresh(): Promise<void> {
   const python = await interpreter();
-  const cmd = await tensiCommand(python);
+  const cmd = await tensiCommand(python, false);
   if (JSON.stringify([cmd, python]) !== running) {
+    output.appendLine("The project's environment changed; restarting tensi.");
     await restart();
   }
 }
@@ -242,7 +335,7 @@ function debounce(fn: () => void, ms: number): () => void {
 
 async function doctor(): Promise<void> {
   const python = await interpreter();
-  const cmd = await tensiCommand(python);
+  const cmd = await tensiCommand(python, true);
   output.show(true);
   if (!cmd) {
     if (await offerInstall(python)) {
@@ -251,19 +344,23 @@ async function doctor(): Promise<void> {
     return;
   }
   const root = folder() ?? ".";
+  output.appendLine(`Project interpreter: ${python ?? "none found"}`);
   const res = await run(cmd[0], [...cmd.slice(1), "doctor", root], { ...envFor(python), NO_COLOR: "1" }, root);
   output.appendLine(res.out);
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   output = vscode.window.createOutputChannel("tensi");
+  status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  status.command = "tensi.doctor";
   const changed = debounce(() => void refresh(), 1500);
   // `uv sync`, `uv add`, a new `.venv`: pick up the environment without a manual restart
   const watcher = vscode.workspace.createFileSystemWatcher(
-    "**/{uv.lock,poetry.lock,pyproject.toml,.venv/pyvenv.cfg,venv/pyvenv.cfg}",
+    "**/{uv.lock,poetry.lock,pyproject.toml,.venv/pyvenv.cfg,venv/pyvenv.cfg,env/pyvenv.cfg}",
   );
   context.subscriptions.push(
     output,
+    status,
     watcher,
     watcher.onDidCreate(changed),
     watcher.onDidChange(changed),

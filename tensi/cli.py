@@ -44,7 +44,12 @@ def is_shape_diagnostic(message: str, name: str | None = None) -> bool:
 
 def is_rewrite_artifact(message: str) -> bool:
     """Errors caused by the shadow itself, e.g. a config field `n_embd: Int[_ts_n_embd] = 768`."""
-    return bool(re.search(r"is not assignable to `(?:_ts_)?Int\[_ts_|Unnecessary `int\(\)` call", message))
+    return bool(
+        re.search(
+            r"is not assignable to `(?:_ts_)?Int\[_ts_|Unnecessary `int\(\)` call|Cannot use type parameter (?:lists|defaults)",
+            message,
+        )
+    )
 
 
 def is_imprecise(message: str) -> bool:

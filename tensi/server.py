@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from . import stubs
+from . import env, stubs
 from .cli import drop_imprecise, is_rewrite_artifact, is_shape_diagnostic
 from .mapping import PositionMap, clean_json
 from .rewrite import find_config_classes, rewrite
@@ -319,6 +319,8 @@ class Proxy:
         self.ready = threading.Event()
         self.tree: ShadowTree | None = None
         self.stubs_dir = stubs.overlay_dir()
+        self._pyrefly_config: Path | None = None
+        self._pyrefly_config_done = False
         self.tree_lock = threading.Lock()
         self.tree_timers: dict[str, threading.Timer] = {}
         self.seeds: dict[str, dict] = {}  # uri -> solved seeds
@@ -737,9 +739,22 @@ class Proxy:
             }
         )
 
+    def pyrefly_config(self) -> Path | None:
+        """The config tensi hands Pyrefly's language server (see `env.lsp_config`), made once."""
+        if not self._pyrefly_config_done:
+            self._pyrefly_config_done = True
+            roots = self.workspace_roots()
+            if roots and self.tree is not None:
+                self._pyrefly_config = env.lsp_config(roots[0], self.tree.dir.parent)
+                log("pyrefly config", self._pyrefly_config)
+        return self._pyrefly_config
+
     def merge_config(self, item):
         item = item if isinstance(item, dict) else {}
         pyrefly = {**(item.get("pyrefly") or {}), **PYREFLY_SETTINGS}
+        config = self.pyrefly_config()
+        if config is not None and not pyrefly.get("configPath"):
+            pyrefly["configPath"] = str(config)
         ours = ([str(self.tree.dir)] if self.tree is not None else []) + (
             [str(self.stubs_dir)] if self.stubs_dir is not None else []
         )

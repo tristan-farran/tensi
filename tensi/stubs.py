@@ -447,10 +447,15 @@ def _key(upstream: Path) -> str:
 COMPANIONS = ("shape_extensions", "einops-shape-stubs")
 
 
+# Shipped inside tensi, for environments where the stub package can't be installed (the einops
+# stubs' package requires Python 3.12, but its `.pyi` files serve a project on any version).
+VENDORED = Path(__file__).parent / "_vendor"
+
+
 def companion_dirs() -> dict[str, Path]:
     found: dict[str, Path] = {}
     for name in COMPANIONS:
-        for entry in sys.path:
+        for entry in [*sys.path, str(VENDORED)]:
             p = Path(entry or ".") / name
             if p.is_dir() and any(p.glob("__init__.py*")):
                 found[name] = p

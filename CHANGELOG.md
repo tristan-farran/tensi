@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+* Works on projects on any Python from 3.10. tensi's rewritten code uses newer type-parameter syntax,
+  so on a 3.10 or 3.11 project Pyrefly's language server answered no hovers at all; tensi now tells
+  Pyrefly to accept that syntax (it still reads packages from the project's own interpreter).
+* The einops shape stubs ship inside tensi, so `rearrange` and `Rearrange` are shaped whatever Python
+  tensi is installed on.
+* The shape solver no longer skips silently on Python 3.10 to 3.12.
+
 ## 0.3.0
 
 First public release.

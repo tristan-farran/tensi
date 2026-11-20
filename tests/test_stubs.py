@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tensi import stubs
+from tensi import env, stubs
 from tensi.mapping import clean_display
 
 FIX = Path(__file__).parent / "fixtures"
@@ -90,6 +90,7 @@ def test_ops_keep_shapes_with_gradual_sizes():
             "--output-format",
             "json",
             *stubs.search_args(),
+            *env.version_args(FIX),
         ],
         capture_output=True,
         text=True,

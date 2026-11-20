@@ -111,7 +111,8 @@ def test_scratch_copy_falls_back_when_the_folder_is_not_writable(tmp_path):
 
     missing = tmp_path / "read-only"  # mkstemp fails here like it does in a read-only folder
     with scratch_copy(missing, "x = 1\n", "_tensi_t_") as (tmp, extra, cwd):
-        assert Path(tmp).read_text() == "x = 1\n" and extra == ["--search-path", str(missing)]
+        assert Path(tmp).read_text() == "x = 1\n" and extra[:2] == ["--search-path", str(missing)]
+        assert extra[2] == "--python-version" and extra[3] >= "3.13"  # tensi's syntax on any project
         assert Path(cwd) != missing
     assert not Path(tmp).exists() and not Path(cwd).exists()
 
@@ -264,3 +265,17 @@ def test_literal_sizes_from_a_caller_are_the_class_dims():
     assert "13 h [batch, seq, hidden]" in " ".join(run("peek", "literal.py").stdout.split())
     r = run("check", "literalbad.py")
     assert r.returncode == 1 and "literalbad.py:21:14" in r.stdout, r.stdout
+
+
+def test_language_server_config_assumes_new_enough_python(tmp_path):
+    """The LSP config tensi writes for a project without its own: tensi's syntax needs 3.13, and a
+    project that configures Pyrefly itself is left alone."""
+    from tensi import env
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\n')
+    cfg = env.lsp_config(tmp_path, tmp_path / "cache")
+    text = cfg.read_text()
+    assert 'python-version = "3.1' in text and env.analysis_version(tmp_path) >= "3.13"
+    assert str(tmp_path) in text and "search-path" in text
+    (tmp_path / "pyrefly.toml").write_text("")
+    assert env.lsp_config(tmp_path, tmp_path / "cache2") is None

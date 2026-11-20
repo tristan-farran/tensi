@@ -20,10 +20,11 @@ def forward(self, x):
 
 ## Install
 
-**VS Code:** install **tensi** from the Marketplace. It follows each project's interpreter (the Python
-extension's choice, else `.venv`), so switching projects or running `uv sync` needs no setup. If tensi is
-missing it offers `uv add --dev tensi-shapes` for the project, or `uv tool install tensi-shapes` once for
-all projects. It runs beside Pylance and only adds shapes.
+**VS Code:** install **tensi** from the Marketplace and open a PyTorch project. It uses the project's own
+`.venv` (what `uv sync` makes; else the Python extension's interpreter), and if tensi isn't there yet it
+offers to install it with one click: `uv add --dev tensi-shapes` in a uv project, else into the project's
+environment. Switching projects or running `uv sync` restarts it by itself. It runs beside Pylance and
+only adds shapes; the status bar shows when it is working out a file.
 
 **Command line, CI, other editors:**
 
@@ -36,8 +37,8 @@ tensi doctor                   # checks Pyrefly, the stubs and the interpreter P
 The package is `tensi-shapes` on PyPI; the command and the import are `tensi`. It brings Pyrefly 1.5.0
 and its torch shape stubs; your project needs `torch` installed.
 
-Any editor that speaks LSP can run `tensi lsp` as a language server for Python files. Python 3.12+;
-`rearrange` and friends are shape-aware on Python 3.12+ (Pyrefly's einops stubs need it).
+Any editor that speaks LSP can run `tensi lsp` as a language server for Python files. Python 3.10+,
+einops included.
 
 ## Try it
 

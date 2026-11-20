@@ -2,7 +2,7 @@
   "name": "tensi",
   "displayName": "tensi",
   "description": "Hover any PyTorch tensor to see its shape, with every dimension named after the variable that sized it. Shape errors underlined. No annotations needed.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "TristanFarran",
   "license": "MIT",
   "engines": {
@@ -38,7 +38,7 @@
         "tensi.pythonPath": {
           "type": "string",
           "default": "",
-          "description": "Usually leave empty. tensi then follows the project's interpreter (the one picked in the Python extension, else the project's .venv) and switches when it changes. tensi itself can be installed in that environment (`uv add --dev tensi-shapes`) or once for all projects (`uv tool install tensi-shapes`).",
+          "description": "Usually leave empty. tensi then follows the project: its own .venv (what `uv sync` makes) first, else the interpreter picked in the Python extension, and it restarts by itself when that environment changes. Set this only to force a specific interpreter; a path that no longer exists is ignored with a warning.",
           "scope": "resource"
         },
         "tensi.hover": {

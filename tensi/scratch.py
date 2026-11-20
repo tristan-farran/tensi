@@ -15,10 +15,13 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from .env import version_args
+
 
 @contextmanager
 def scratch_copy(folder: Path, text: str, prefix: str):
-    """Yield (path of a temp .py holding `text`, extra pyrefly args, cwd to run Pyrefly in)."""
+    """Yield (path of a temp .py holding `text`, extra pyrefly args, cwd to run Pyrefly in). The extra
+    args include the Python version tensi's rewritten syntax needs (see `env`)."""
     folder = Path(folder)
     made_dir: Path | None = None
     try:
@@ -33,7 +36,7 @@ def scratch_copy(folder: Path, text: str, prefix: str):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        yield tmp, extra, cwd
+        yield tmp, extra + version_args(folder), cwd
     finally:
         try:
             os.unlink(tmp)

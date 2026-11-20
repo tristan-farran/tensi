@@ -23,17 +23,17 @@ jaxtyping annotation that would name it, e.g. `x: Shaped[Tensor, "batch seq in_f
 
 ## Getting started
 
-1. Open a folder with PyTorch code. tensi uses the project's interpreter: the one picked in the Python
-   extension, else the project's `.venv` (what `uv sync` creates).
-2. If tensi isn't installed yet, it offers two ways:
-   * **Add to this project** runs `uv add --dev tensi-shapes` in a uv project (or installs into the
-     interpreter otherwise), so `uv sync` keeps it.
-   * **Install for all projects** runs `uv tool install tensi-shapes` once. tensi then works in every
-     project, and still reads torch and your packages from each project's own environment.
-3. Hover a tensor.
+1. Open a folder with PyTorch code. tensi uses the project's own `.venv` (what `uv sync` creates), else
+   the interpreter picked in the Python extension.
+2. If tensi isn't installed there yet, click **Install tensi**. In a uv project that runs
+   `uv add --dev tensi-shapes`, so `uv sync` keeps it; otherwise it installs into the project's
+   environment. **Install for all projects** (`uv tool install tensi-shapes`) is the other option: tensi
+   then works everywhere and still reads torch and your packages from each project's environment.
+3. Hover a tensor. The **tensi** item in the status bar spins while it works out a file (a few seconds
+   the first time) and settles when shapes are ready.
 
 Switching projects, changing the interpreter, or running `uv sync` is picked up on its own: there is
-nothing to set and no server to restart.
+nothing to set and no server to restart. Any Python from 3.10 up works.
 
 If something looks off, run **tensi: Check setup** from the Command Palette. It checks Pyrefly, the stubs
 and the interpreter, runs one real probe, and prints a fix for anything that fails.
@@ -45,7 +45,7 @@ shape errors, so nothing is duplicated.
 
 | Setting | Default | |
 | --- | --- | --- |
-| `tensi.pythonPath` | empty | leave empty to follow each project's interpreter; set it only to pin one |
+| `tensi.pythonPath` | empty | leave empty to follow each project; set it only to pin an interpreter |
 | `tensi.hover` | `tensors` | only hovers that carry a shape; `all` for every Pyrefly hover |
 | `tensi.diagnostics` | `shapes` | `shapes`, `all` or `off` |
 | `tensi.inlayHints` | off | shapes inline, after each variable |
@@ -58,7 +58,7 @@ shape errors, so nothing is duplicated.
 
 ## Requirements
 
-Python 3.12 or newer with `torch` installed. The same package gives you a CLI: `tensi peek model.py`
+Python 3.10 or newer with `torch` installed. The same package gives you a CLI: `tensi peek model.py`
 lists every tensor's shape, and `tensi check src/` exits 1 on a shape error, for CI.
 
 tensi is built on Pyrefly's experimental tensor-shape support. Source, docs and issues:
