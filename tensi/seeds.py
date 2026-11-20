@@ -749,9 +749,34 @@ class Probe:
         self.type: str | None = None
 
 
+_TYPE_PARAMS = re.compile(r"^[ \t]*(?:async[ \t]+)?(?:class|def)[ \t]+\w+[ \t]*(?=\[)", re.M)
+
+
+def parse_shadow(shadow: str) -> ast.Module:
+    """`ast.parse` the shadow on any Python. Its `class Mlp[_ts_d: _ts_IntVar = _ts_in]` headers are
+    3.12/3.13 syntax, so the type-parameter lists are blanked to spaces first: every other node keeps
+    its line and column, and no probe needs the type parameters themselves."""
+    out, pos = [], 0
+    for m in _TYPE_PARAMS.finditer(shadow):
+        start = m.end()
+        if start < pos:
+            continue
+        depth, i = 0, start
+        while i < len(shadow):
+            depth += {"[": 1, "]": -1}.get(shadow[i], 0)
+            if depth == 0:
+                break
+            i += 1
+        out.append(shadow[pos:start])
+        out.append(re.sub(r"[^\n]", " ", shadow[start : i + 1]))
+        pos = i + 1
+    out.append(shadow[pos:])
+    return ast.parse("".join(out))
+
+
 def build_probes(shadow: str) -> tuple[list[Probe], dict[int, tuple]]:
     """Wrap callees and positional args of module-like calls inside functions."""
-    tree = ast.parse(shadow)
+    tree = parse_shadow(shadow)
     src = _Src(shadow)
     probes: list[Probe] = []
     calls: dict[int, tuple] = {}  # call id -> (enclosing fn name, owner class)
@@ -1089,7 +1114,7 @@ def solve(
         res = rewrite(source, package, config_index=config_index, seeds=seeds)
         info = res.info
         try:
-            shadow_tree = ast.parse(res.shadow)
+            shadow_tree = parse_shadow(res.shadow)
             probes, calls = build_probes(res.shadow)
         except SyntaxError:
             break

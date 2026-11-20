@@ -5,6 +5,7 @@ import pytest
 
 from tensi.mapping import PositionMap, clean_display
 from tensi.rewrite import IMPORT_TEXT, rewrite
+from tensi.seeds import parse_shadow
 
 HERE = Path(__file__).parent
 FIXTURES = ["plain", "attn", "bad"]
@@ -23,13 +24,13 @@ def test_line_count_preserved_and_valid(name):
     src = (HERE / "fixtures" / f"{name}.py").read_text()
     res = rewrite(src)
     assert len(res.shadow.split("\n")) == len(src.split("\n"))
-    ast.parse(res.shadow, feature_version=(3, 12))
+    parse_shadow(res.shadow)  # valid Python on every supported version
 
 
 def sh(src: str) -> str:
     res = rewrite(src)
     assert len(res.shadow.split("\n")) == len(src.split("\n"))
-    ast.parse(res.shadow, feature_version=(3, 12))
+    parse_shadow(res.shadow)  # valid Python on every supported version
     return res.shadow
 
 
@@ -391,7 +392,7 @@ def test_config_from_another_module_is_imported_under_an_alias():
 def sh_idx(src, idx):
     res = rewrite(src, config_index=idx)
     assert len(res.shadow.split("\n")) == len(src.split("\n"))
-    ast.parse(res.shadow, feature_version=(3, 12))
+    parse_shadow(res.shadow)  # valid Python on every supported version
     return res.shadow
 
 
