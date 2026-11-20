@@ -79,19 +79,6 @@ tensi check v0.3.0  bad.py  819ms
 `tensi check src/` checks every Python file under a folder and exits 1 when it finds a shape error, so it
 can gate CI.
 
-## Settings
-
-| VS Code setting | Env var | Default | |
-| --- | --- | --- | --- |
-| `tensi.pythonPath` | | empty | leave empty to follow each project's interpreter; set it only to pin one |
-| `tensi.hover` | `TENSI_HOVER` | `tensors` | only hovers that carry a shape; `all` for every Pyrefly hover |
-| `tensi.diagnostics` | `TENSI_DIAGNOSTICS` | `shapes` | `shapes`, `all` or `off` |
-| `tensi.inlayHints` | `TENSI_INLAY_HINTS=1` | off | shapes inline, after each variable |
-| `tensi.shadowWorkspace` | `TENSI_SHADOW_WORKSPACE` | on | shapes survive imports between your files |
-| | `TENSI_STUBS` | `1` | tensi's patched torch stubs (see below); `0` for Pyrefly's own |
-| | `TENSI_PYREFLY` | | the Pyrefly executable, if not the one installed beside tensi |
-| | `TENSI_LOG=/path` | | log every LSP message |
-
 ## Contributing
 
 See [CONTRIBUTING.md](https://github.com/tristan-farran/tensi/blob/main/CONTRIBUTING.md) for the development setup, tests and releases.
