@@ -4,7 +4,7 @@
 
 <p align="center">
   <b>tensi sees your tensors, and now you do too!</b><br>
-  Hover any PyTorch tensor and see its shape, with _named dimensions_.
+  Hover any PyTorch tensor and see its shape, with <i>named dimensions</i>.
 </p>
 
 <p align="center">
