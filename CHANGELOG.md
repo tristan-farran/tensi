@@ -10,6 +10,10 @@
 * `torch.tensor(ids)` with `ids: list[int]` (or a list comprehension) has an unknown shape instead of
   a 0-d one, so `torch.tensor(lengths).unsqueeze(1)` is no longer an error. Literals keep their
   shape (`torch.tensor([[1, 2], [3, 4]])` is `[2, 2]`).
+* `a * b`, `a + b`, `a == b` and the other elementwise operators broadcast both shapes. Pyrefly lets
+  a tensor stand in for a Python scalar, so the right operand was read as a scalar and the result
+  kept the left one's shape: `self.scale[i] * x` with a 0-d `scale[i]` was 0-d (erasing every
+  shape after it in nanochat-style residual mixing), and `[2, 3] + [5, 2, 3]` was `[2, 3]`.
 
 ## 0.3.3
 

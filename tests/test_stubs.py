@@ -136,3 +136,30 @@ def test_tensor_of_a_list_is_not_zero_dim(tmp_path):
     got = [e["description"].split("revealed type: ")[-1] for e in errors if e["name"] == "reveal-type"]
     assert got == ["Tensor", "Tensor", "Tensor[[2, 3]]", "Tensor[[]]"], got
     assert not [e for e in errors if e["name"] != "reveal-type"], errors
+
+
+def test_binary_ops_broadcast_both_operands(tmp_path):
+    """`scale[i] * x` with a 0-d `scale[i]`, and any lower-rank left operand, broadcasts to the
+    larger shape (Pyrefly matched the right operand as a Python scalar and kept the left shape)."""
+    import json
+
+    (tmp_path / "m.py").write_text(
+        "import torch\n"
+        "from typing import reveal_type\n"
+        "def f(x: torch.Tensor[[2, 3]], s: torch.Tensor[[]], y: torch.Tensor[[5, 2, 3]], n: int):\n"
+        "    reveal_type(s * x)\n"
+        "    reveal_type(x + y)\n"
+        "    reveal_type(x * 2.0)\n"
+        "    reveal_type(x - n)\n"
+        "    reveal_type(s < x)\n"
+    )
+    proc = subprocess.run(
+        [os.environ.get("TENSI_PYREFLY", "pyrefly"), "check", "m.py", "--output-format", "json", *stubs.search_args()],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    errors = json.loads(proc.stdout)["errors"]
+    got = [e["description"].split("revealed type: ")[-1] for e in errors if e["name"] == "reveal-type"]
+    assert got == ["Tensor[[2, 3]]", "Tensor[[5, 2, 3]]", "Tensor[[2, 3]]", "Tensor[[2, 3]]", "Tensor[[2, 3]]"], got
+    assert not [e for e in errors if e["name"] != "reveal-type"], errors

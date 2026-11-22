@@ -319,6 +319,28 @@ def _amax(text: str) -> str | None:
     return text.replace(_LOGSUMEXP, _AMAX + _LOGSUMEXP)
 
 
+_BINARY_OPS = (
+    "add", "sub", "mul", "truediv", "floordiv", "mod", "eq", "ne", "lt", "le", "gt", "ge",
+    "iadd", "isub", "imul", "itruediv", "ifloordiv", "imod",
+)
+_BINARY_RE = re.compile(
+    r"(    def __(?:" + "|".join(_BINARY_OPS) + r")__\[OtherShape: _Shape = \[\]\]\(\n        self, other: )"
+    r"_TensorLike\[OtherShape\]"
+)
+
+
+def _binary_ops(text: str) -> str | None:
+    """`s * x` with `s` a 0-d tensor: Pyrefly lets a Tensor stand for a Python scalar, so against
+    `other: Tensor[OtherShape] | _Scalar` it took the scalar side and `OtherShape` fell back to its
+    `[]` default; the result kept only `s`'s shape (`[] * [b, t, d]` was `[]`, `[2, 3] * [5, 2, 3]`
+    was `[2, 3]`). Typed as `Tensor[OtherShape]` alone, a tensor binds its shape and a scalar,
+    which Pyrefly also accepts there, still takes the `[]` default. `**` is left alone: without the
+    union Pyrefly reads `x ** 2` through `int.__rpow__` and makes it an `int`."""
+    out, n = _BINARY_RE.subn(r"\1Tensor[OtherShape]", text)
+    # upstream's `<`/`>` family only takes this form once `ordering-shaped` has run
+    return out if n >= len(_BINARY_OPS) - 4 else None
+
+
 PATCHES: list[Patch] = [
     Patch("dsl-norm-checks", "_shapes.pyi", "Shape functions used by the typed norm layers below.", new=_DSL),
     Patch("nn-import-dsl", "nn/__init__.pyi", "Import the two new shape functions.", fn=_nn_imports),
@@ -411,6 +433,13 @@ PATCHES: list[Patch] = [
         "default made every list that is not a literal a 0-d tensor, so `.unsqueeze(1)` read as an error.",
         old="def tensor[Shape: IntTuple = []](\n    data: Tensor[Shape] | RegularNestedList[Shape, _TensorScalar],\n",
         new="def tensor[Shape: IntTuple](\n    data: Tensor[Shape] | RegularNestedList[Shape, _TensorScalar],\n",
+    ),
+    Patch(
+        "binary-ops-broadcast",
+        "__init__.pyi",
+        "s * x, x + y and x == y broadcast both shapes; a 0-d or lower-rank left operand made the "
+        "result its own shape (`self.scale[i] * x` was 0-d, erasing every shape after it).",
+        fn=_binary_ops,
     ),
 ]
 
