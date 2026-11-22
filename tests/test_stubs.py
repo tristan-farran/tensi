@@ -111,3 +111,28 @@ def test_ops_keep_shapes_with_gradual_sizes():
         "Tensor[[B, int, 64]]",
         "Tensor[[B, int]]",
     ], got
+
+
+def test_tensor_of_a_list_is_not_zero_dim(tmp_path):
+    """`torch.tensor(ids)` for a `list[int]` has an unknown shape (only literals have a known one)."""
+    import json
+
+    (tmp_path / "m.py").write_text(
+        "import torch\n"
+        "from typing import reveal_type\n"
+        "def f(ids: list[int], prompts: list[str]):\n"
+        "    reveal_type(torch.tensor(ids))\n"
+        "    reveal_type(torch.tensor([len(p) for p in prompts]).unsqueeze(1))\n"
+        "    reveal_type(torch.tensor([[1, 2, 3], [4, 5, 6]]))\n"
+        "    reveal_type(torch.tensor(2.0))\n"
+    )
+    proc = subprocess.run(
+        [os.environ.get("TENSI_PYREFLY", "pyrefly"), "check", "m.py", "--output-format", "json", *stubs.search_args()],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    errors = json.loads(proc.stdout)["errors"]
+    got = [e["description"].split("revealed type: ")[-1] for e in errors if e["name"] == "reveal-type"]
+    assert got == ["Tensor", "Tensor", "Tensor[[2, 3]]", "Tensor[[]]"], got
+    assert not [e for e in errors if e["name"] != "reveal-type"], errors

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+* No more false shape errors from a guessed input shape. An input tensi had not seeded yet is
+  Unknown to Pyrefly, which then picks a stub's first overload (`nn.Embedding(idx)` reads as 1-d,
+  so its output is rank 2). The solver used to push that guess into the modules it was passed to,
+  and an `x = blk(x)` loop locked it in, so correct encoder/decoder code reported unpack, split and
+  transpose errors. Shapes that flow from such an input no longer seed anything.
+* `torch.tensor(ids)` with `ids: list[int]` (or a list comprehension) has an unknown shape instead of
+  a 0-d one, so `torch.tensor(lengths).unsqueeze(1)` is no longer an error. Literals keep their
+  shape (`torch.tensor([[1, 2], [3, 4]])` is `[2, 2]`).
+
 ## 0.3.3
 
 * No changes to the Python package; released alongside the VS Code extension.

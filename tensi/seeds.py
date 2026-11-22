@@ -147,6 +147,83 @@ def _functions(tree: ast.AST):
 _NEUTRAL_ATTRS = {"device", "dtype", "shape", "is_cuda", "requires_grad", "ndim", "size", "dim", "numel"}
 
 
+def _carries_unknown(e, tainted: set[str]) -> bool:
+    """Whether `e` can hold a value Pyrefly only knows through an Unknown: a read of a tainted name
+    along the tensor's own data path. Sizes and metadata (`x.shape`, `x.size(1)`, `x.device`) never
+    carry it, nor do keyword arguments; a module call (`self.attn(x, mask)`) passes on only what
+    its first argument carries, since its seeded `forward` fixes the rest."""
+    if isinstance(e, ast.Name):
+        return e.id in tainted
+    if isinstance(e, ast.Attribute):
+        return e.attr not in _NEUTRAL_ATTRS and _carries_unknown(e.value, tainted)
+    if isinstance(e, ast.Call):
+        f = e.func
+        if isinstance(f, ast.Attribute):
+            if f.attr in _NEUTRAL_ATTRS:
+                return False
+            root = f.value
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id == "self":
+                return bool(e.args) and _carries_unknown(e.args[0], tainted)
+            if _carries_unknown(f.value, tainted):
+                return True
+        elif isinstance(f, ast.Name) and f.id in ("len", "int", "float", "bool", "isinstance", "range"):
+            return False
+        return any(_carries_unknown(a.value if isinstance(a, ast.Starred) else a, tainted) for a in e.args)
+    if isinstance(e, ast.Subscript):
+        return _carries_unknown(e.value, tainted)
+    if isinstance(e, ast.IfExp):
+        return _carries_unknown(e.body, tainted) or _carries_unknown(e.orelse, tainted)
+    if isinstance(e, (ast.BinOp,)):
+        return _carries_unknown(e.left, tainted) or _carries_unknown(e.right, tainted)
+    if isinstance(e, ast.UnaryOp):
+        return _carries_unknown(e.operand, tainted)
+    if isinstance(e, (ast.Tuple, ast.List)):
+        return any(_carries_unknown(x, tainted) for x in e.elts)
+    if isinstance(e, ast.NamedExpr):
+        return _carries_unknown(e.value, tainted)
+    return False
+
+
+def _unknown_names(fn) -> set[str]:
+    """Locals of `fn` that may hold a tensor flowing from a parameter with no annotation: in the
+    shadow, an input tensi has not seeded yet. Pyrefly types such a parameter as Unknown, and an
+    Unknown argument picks a stub's first overload (`Embedding(idx)` with idx unknown is
+    `[T, d]`, the 1-d case), so a shape read downstream of it is a guess, not a fact. Flow
+    insensitive: a name assigned from such a value anywhere counts everywhere."""
+    a = fn.args
+    tainted = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs if x.annotation is None} - {"self", "cls"}
+    if not tainted:
+        return set()
+
+    def targets(t):
+        if isinstance(t, ast.Name):
+            yield t.id
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            for x in t.elts:
+                yield from targets(x.value if isinstance(x, ast.Starred) else x)
+
+    flows = []  # (target names, value)
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign):
+            flows += [(list(targets(t)), n.value) for t in n.targets]
+        elif isinstance(n, (ast.AugAssign, ast.AnnAssign)) and n.value is not None:
+            flows.append((list(targets(n.target)), n.value))
+        elif isinstance(n, (ast.For, ast.AsyncFor)):
+            flows.append((list(targets(n.target)), n.iter))
+        elif isinstance(n, ast.NamedExpr):
+            flows.append(([n.target.id], n.value))
+    changed = True
+    while changed:
+        changed = False
+        for names, value in flows:
+            if any(t not in tainted for t in names) and _carries_unknown(value, tainted):
+                tainted |= set(names)
+                changed = True
+    return tainted
+
+
 def _rank_view(e, p: str) -> bool:
     """`p`, `p[:, -k:]`, or `p if ... else p[:, -k:]`: the parameter itself or a slice of it that
     keeps its rank (nanoGPT's `idx_cond` in `generate`)."""
@@ -747,6 +824,7 @@ class Probe:
         self.out_line = self.out_col = None
         self.meta = None
         self.type: str | None = None
+        self.unknown = False  # the argument flows from an input Pyrefly can only type as Unknown
 
 
 _TYPE_PARAMS = re.compile(r"^[ \t]*(?:async[ \t]+)?(?:class|def)[ \t]+\w+[ \t]*(?=\[)", re.M)
@@ -789,6 +867,7 @@ def build_probes(shadow: str) -> tuple[list[Probe], dict[int, tuple]]:
     }
     for fn, cls in _functions(tree):
         fn_params = {a.arg for a in fn.args.posonlyargs + fn.args.args}
+        unknown = _unknown_names(fn)
 
         first_load: dict[str, tuple[int, int]] = {}  # each parameter's first read, in source order
         neutral: set[int] = set()  # reads that say nothing about rank: `identity = x`, `x.device`
@@ -856,6 +935,7 @@ def build_probes(shadow: str) -> tuple[list[Probe], dict[int, tuple]]:
                 if isinstance(a, ast.Starred):
                     break
                 ap = Probe("arg", *src.span(a), cid, i)
+                ap.unknown = _carries_unknown(a, unknown)
                 if isinstance(a, ast.Name) and a.id in fn_params and first_load.get(a.id) == (a.lineno, a.col_offset):
                     ap.meta = (a.id, node.lineno, node.col_offset)  # a parameter, not yet reassigned
                 elif isinstance(a, ast.Name) and a.id in views:
@@ -1203,6 +1283,9 @@ def solve(
                     key = (owner, fname, pname)
                     if pname not in helper_free[callee.meta]:
                         continue
+                    if p.unknown:
+                        unreadable.add(key)
+                        continue
                     shape = parse_tensor(p.type) if p.type else None
                     if shape is None:
                         if p.type and "Tensor" in p.type:
@@ -1256,6 +1339,9 @@ def solve(
                     continue
                 pname = fwd_params[cname][p.arg_index]
                 if pname not in seedable:
+                    continue
+                if p.unknown:
+                    unreadable.add((cname, "forward", pname))
                     continue
                 shape = parse_tensor(p.type)
                 if shape is None:

@@ -404,6 +404,14 @@ PATCHES: list[Patch] = [
         new=_TYPE_NEW,
     ),
     Patch("tensor-amax-amin", "__init__.pyi", "x.amax(dim)/x.amin(dim) reduce like x.max(dim).values.", fn=_amax),
+    Patch(
+        "tensor-list-unknown-rank",
+        "__init__.pyi",
+        "torch.tensor(ids) with `ids: list[int]` has an unknown shape; the literal-only overload's `= []` "
+        "default made every list that is not a literal a 0-d tensor, so `.unsqueeze(1)` read as an error.",
+        old="def tensor[Shape: IntTuple = []](\n    data: Tensor[Shape] | RegularNestedList[Shape, _TensorScalar],\n",
+        new="def tensor[Shape: IntTuple](\n    data: Tensor[Shape] | RegularNestedList[Shape, _TensorScalar],\n",
+    ),
 ]
 
 

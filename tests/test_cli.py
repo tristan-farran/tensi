@@ -279,3 +279,20 @@ def test_language_server_config_assumes_new_enough_python(tmp_path):
     assert str(tmp_path) in text and "search-path" in text
     (tmp_path / "pyrefly.toml").write_text("")
     assert env.lsp_config(tmp_path, tmp_path / "cache2") is None
+
+
+def test_unknown_inputs_never_become_seeds():
+    """An input with no seed yet is Unknown to Pyrefly, and an Unknown argument picks a stub's first
+    overload (`Embedding(idx)` reads as `[T, d]`). Shapes built on it must not seed a callee:
+    they used to make `_conv_stack`, `Block` and `LayerNorm` rank 2 and lock in through the
+    `x = blk(x)` loop, so correct code reported unpack/transpose/split errors."""
+    r = run("check", "encdec.py")
+    assert r.returncode == 0, r.stdout
+    out = " ".join(run("peek", "encdec.py").stdout.split())
+    assert "48 x [int, int, dim]" in out and "53 x [int, int, dim]" in out, out
+    assert "[int, dim]" not in out, out  # the first-overload guess
+    from tensi.seeds import solve
+
+    seeds = solve(FIX / "encdec.py")
+    assert seeds[("Block", "forward", "x")] == ["int", "int", "~dim"], seeds  # not Decoder's own output
+    assert len(seeds[("LayerNorm", "forward", "input")]) == 3, seeds
