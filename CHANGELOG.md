@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.4
 
 * No more false shape errors from a guessed input shape. An input tensi had not seeded yet is
   Unknown to Pyrefly, which then picks a stub's first overload (`nn.Embedding(idx)` reads as 1-d,

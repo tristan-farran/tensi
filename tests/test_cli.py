@@ -296,3 +296,31 @@ def test_unknown_inputs_never_become_seeds():
     seeds = solve(FIX / "encdec.py")
     assert seeds[("Block", "forward", "x")] == ["int", "int", "~dim"], seeds  # not Decoder's own output
     assert len(seeds[("LayerNorm", "forward", "input")]) == 3, seeds
+
+
+def test_unknown_flow_follows_the_tensor_not_its_metadata():
+    """What counts as flowing from an unseeded input: data, not sizes, masks or keyword arguments."""
+    import ast
+
+    from tensi.seeds import _unknown_names
+
+    fn = ast.parse(
+        "def forward(self, x: T, idx, mask=None):\n"
+        "    B, L = idx.shape\n"  # sizes: known to be ints whatever idx is
+        "    h = self.wte(idx)\n"
+        "    att = x.masked_fill(mask == 0, 0.0)\n"  # a method keeps its receiver's shape
+        "    y = self.attn(x, mask)\n"  # a module call: its seeded forward fixes the rest
+        "    z = torch.cat([h, x], dim=-1)\n"
+        "    w = [blk(t) for t in h]\n"
+        "    q = x.expand_as(h)\n"
+        "    m = mask if mask is not None else x\n"
+        "    c = cache.prev\n"  # a field of another object, not that object's data
+        "    v = self.wte(idx)\n"
+        "    v = x * 2\n"  # one known assignment makes v known
+        "    u = self.wte(idx)\n"
+        "    for blk in self.blocks:\n"
+        "        u = blk(u)\n"  # every assignment unknown, through the loop
+    ).body[0]
+    got = _unknown_names(fn)
+    assert {"h", "z", "w", "q", "m", "u"} <= got, got
+    assert not {"B", "L", "att", "y", "x", "c", "v"} & got, got

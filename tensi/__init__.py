@@ -4,7 +4,7 @@ import os
 import shutil
 import sys
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 
 def pyrefly() -> str:

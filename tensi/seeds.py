@@ -147,15 +147,26 @@ def _functions(tree: ast.AST):
 _NEUTRAL_ATTRS = {"device", "dtype", "shape", "is_cuda", "requires_grad", "ndim", "size", "dim", "numel"}
 
 
+# tensor methods whose result shape comes from their argument (`x.expand_as(y)`), not their receiver
+_SHAPE_FROM_ARG = {"matmul", "mm", "bmm", "expand_as", "view_as", "reshape_as", "new_empty", "new_zeros", "new_ones"}
+_TENSOR_VIEWS = {"T", "mT", "H", "mH", "real", "imag", "data"}
+_INT_FUNCS = {"len", "int", "float", "bool", "isinstance", "range", "min", "max", "round", "abs"}
+
+
 def _carries_unknown(e, tainted: set[str]) -> bool:
-    """Whether `e` can hold a value Pyrefly only knows through an Unknown: a read of a tainted name
+    """Whether `e` can hold a tensor Pyrefly only knows through an Unknown: a read of a tainted name
     along the tensor's own data path. Sizes and metadata (`x.shape`, `x.size(1)`, `x.device`) never
-    carry it, nor do keyword arguments; a module call (`self.attn(x, mask)`) passes on only what
-    its first argument carries, since its seeded `forward` fixes the rest."""
+    carry it, nor do keyword arguments. A method keeps its receiver's shape, so
+    `att.masked_fill(mask, 0)` with an unknown `mask` is still `att`'s shape; a module call
+    (`self.attn(x, mask)`) passes on only what its first argument carries, since its seeded
+    `forward` fixes the rest."""
     if isinstance(e, ast.Name):
         return e.id in tainted
+    if isinstance(e, ast.Starred):
+        return _carries_unknown(e.value, tainted)
     if isinstance(e, ast.Attribute):
-        return e.attr not in _NEUTRAL_ATTRS and _carries_unknown(e.value, tainted)
+        # `x.mT` is x's data; `kv_cache.prev_embedding` is a field of some other object
+        return e.attr in _TENSOR_VIEWS and _carries_unknown(e.value, tainted)
     if isinstance(e, ast.Call):
         f = e.func
         if isinstance(f, ast.Attribute):
@@ -168,33 +179,49 @@ def _carries_unknown(e, tainted: set[str]) -> bool:
                 return bool(e.args) and _carries_unknown(e.args[0], tainted)
             if _carries_unknown(f.value, tainted):
                 return True
-        elif isinstance(f, ast.Name) and f.id in ("len", "int", "float", "bool", "isinstance", "range"):
+            if isinstance(root, ast.Name) and root.id in _SKIP_ROOTS:
+                pass  # `torch.cat([a, b])`, `F.gelu(x)`: a function, its arguments make the shape
+            elif f.attr not in _SHAPE_FROM_ARG:
+                return False  # a method of an untainted receiver
+        elif isinstance(f, ast.Name) and f.id in _INT_FUNCS:
             return False
-        return any(_carries_unknown(a.value if isinstance(a, ast.Starred) else a, tainted) for a in e.args)
+        return any(_carries_unknown(a, tainted) for a in e.args)
     if isinstance(e, ast.Subscript):
         return _carries_unknown(e.value, tainted)
     if isinstance(e, ast.IfExp):
         return _carries_unknown(e.body, tainted) or _carries_unknown(e.orelse, tainted)
-    if isinstance(e, (ast.BinOp,)):
+    if isinstance(e, ast.BinOp):
         return _carries_unknown(e.left, tainted) or _carries_unknown(e.right, tainted)
+    if isinstance(e, ast.BoolOp):
+        return any(_carries_unknown(v, tainted) for v in e.values)
+    if isinstance(e, ast.Compare):
+        return any(_carries_unknown(v, tainted) for v in [e.left, *e.comparators])
     if isinstance(e, ast.UnaryOp):
         return _carries_unknown(e.operand, tainted)
     if isinstance(e, (ast.Tuple, ast.List)):
         return any(_carries_unknown(x, tainted) for x in e.elts)
-    if isinstance(e, ast.NamedExpr):
+    if isinstance(e, (ast.ListComp, ast.GeneratorExp, ast.SetComp)):
+        # `[blk(t) for t in xs]`: the loop variable stands for the iterable's items
+        inner = set(tainted)
+        for g in e.generators:
+            if _carries_unknown(g.iter, inner):
+                inner |= {n.id for n in ast.walk(g.target) if isinstance(n, ast.Name)}
+        return _carries_unknown(e.elt, inner)
+    if isinstance(e, (ast.NamedExpr, ast.Await)):
         return _carries_unknown(e.value, tainted)
     return False
 
 
 def _unknown_names(fn) -> set[str]:
-    """Locals of `fn` that may hold a tensor flowing from a parameter with no annotation: in the
+    """Locals of `fn` that hold a tensor flowing from a parameter with no annotation: in the
     shadow, an input tensi has not seeded yet. Pyrefly types such a parameter as Unknown, and an
     Unknown argument picks a stub's first overload (`Embedding(idx)` with idx unknown is
-    `[T, d]`, the 1-d case), so a shape read downstream of it is a guess, not a fact. Flow
-    insensitive: a name assigned from such a value anywhere counts everywhere."""
+    `[T, d]`, the 1-d case), so a shape read downstream of it is a guess, not a fact.
+    A local counts only if every assignment to it carries an Unknown: `x = self.wte(idx)` once idx
+    is seeded makes x known even where a later `x = x + gate * cached` mixes in an unknown."""
     a = fn.args
-    tainted = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs if x.annotation is None} - {"self", "cls"}
-    if not tainted:
+    params = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs if x.annotation is None} - {"self", "cls"}
+    if not params:
         return set()
 
     def targets(t):
@@ -204,22 +231,29 @@ def _unknown_names(fn) -> set[str]:
             for x in t.elts:
                 yield from targets(x.value if isinstance(x, ast.Starred) else x)
 
-    flows = []  # (target names, value)
+    assigned: dict[str, list[ast.expr]] = defaultdict(list)  # name -> every value assigned to it
     for n in ast.walk(fn):
+        pairs = []
         if isinstance(n, ast.Assign):
-            flows += [(list(targets(t)), n.value) for t in n.targets]
+            pairs = [(t, n.value) for t in n.targets]
         elif isinstance(n, (ast.AugAssign, ast.AnnAssign)) and n.value is not None:
-            flows.append((list(targets(n.target)), n.value))
+            pairs = [(n.target, n.value)]
         elif isinstance(n, (ast.For, ast.AsyncFor)):
-            flows.append((list(targets(n.target)), n.iter))
+            pairs = [(n.target, n.iter)]
         elif isinstance(n, ast.NamedExpr):
-            flows.append(([n.target.id], n.value))
+            pairs = [(n.target, n.value)]
+        for t, v in pairs:
+            for name in targets(t):
+                assigned[name].append(v)
+    # the largest set consistent with the rule: start from every candidate, drop any local with an
+    # assignment that does not carry an Unknown, until nothing changes (handles `x = blk(x)` cycles)
+    tainted = params | set(assigned)
     changed = True
     while changed:
         changed = False
-        for names, value in flows:
-            if any(t not in tainted for t in names) and _carries_unknown(value, tainted):
-                tainted |= set(names)
+        for name, values in assigned.items():
+            if name in tainted and not all(_carries_unknown(v, tainted) for v in values):
+                tainted.discard(name)
                 changed = True
     return tainted
 
