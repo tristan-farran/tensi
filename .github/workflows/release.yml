@@ -22,6 +22,8 @@ jobs:
         run: test "v$(python -c 'import tensi; print(tensi.__version__)')" = "${GITHUB_REF_NAME}"
       - run: pip install build && python -m build
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true  # re-pushing a tag (to finish a failed extension release) keeps the published package
 
   vscode:
     needs: pypi  # the extension installs tensi from PyPI, so publish that first

@@ -320,8 +320,24 @@ def _amax(text: str) -> str | None:
 
 
 _BINARY_OPS = (
-    "add", "sub", "mul", "truediv", "floordiv", "mod", "eq", "ne", "lt", "le", "gt", "ge",
-    "iadd", "isub", "imul", "itruediv", "ifloordiv", "imod",
+    "add",
+    "sub",
+    "mul",
+    "truediv",
+    "floordiv",
+    "mod",
+    "eq",
+    "ne",
+    "lt",
+    "le",
+    "gt",
+    "ge",
+    "iadd",
+    "isub",
+    "imul",
+    "itruediv",
+    "ifloordiv",
+    "imod",
 )
 _BINARY_RE = re.compile(
     r"(    def __(?:" + "|".join(_BINARY_OPS) + r")__\[OtherShape: _Shape = \[\]\]\(\n        self, other: )"

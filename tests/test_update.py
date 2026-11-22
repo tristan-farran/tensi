@@ -75,7 +75,10 @@ def test_upgrade_command_matches_the_installation(monkeypatch, tmp_path):
     monkeypatch.setattr(update.shutil, "which", lambda name: "/usr/bin/uv")
     assert update.upgrade_command(str(tmp_path / ".venv"), "py").startswith("uv add --dev --upgrade-package")
     monkeypatch.setattr(update.shutil, "which", lambda name: None)
-    assert update.upgrade_command("/opt/env", "/opt/env/bin/python") == "/opt/env/bin/python -m pip install --upgrade tensi-shapes"
+    assert (
+        update.upgrade_command("/opt/env", "/opt/env/bin/python")
+        == "/opt/env/bin/python -m pip install --upgrade tensi-shapes"
+    )
 
 
 def test_pyrefly_pins_agree():

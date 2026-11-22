@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.4
+
+* No changes to the extension; released alongside tensi 0.3.4.
+
 ## 0.3.3
 
 * If the tensi it finds is older than the extension (an old global install, say), it offers a one-click

@@ -332,9 +332,14 @@ class Proxy:
     def notify_setup(self):
         """Once per session, off the request path: a Pyrefly other than the pinned one (a warning,
         since shapes can quietly go missing), and a newer tensi on PyPI (with its install command)."""
-        for kind, text in ((2, update.pyrefly_mismatch(self.pyrefly_cmd[0])), (3, update.update_message(update.latest()))):
+        for kind, text in (
+            (2, update.pyrefly_mismatch(self.pyrefly_cmd[0])),
+            (3, update.update_message(update.latest())),
+        ):
             if text:
-                self.editor.write({"jsonrpc": "2.0", "method": "window/showMessage", "params": {"type": kind, "message": text}})
+                self.editor.write(
+                    {"jsonrpc": "2.0", "method": "window/showMessage", "params": {"type": kind, "message": text}}
+                )
 
     # ---------- child process ----------
     def start_child(self):

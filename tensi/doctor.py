@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from . import PYREFLY_VERSION, env, pyrefly, stubs
+
 PROBE = """import torch
 from typing import reveal_type
 reveal_type(torch.zeros(2, 3).transpose(0, 1))
@@ -119,7 +120,10 @@ def run(folder: str | None = None) -> int:
     # 1. Pyrefly itself
     exe = shutil.which(pyrefly()) or (pyrefly() if Path(pyrefly()).exists() else None)
     if exe is None:
-        r.fail(f"Pyrefly not found (`{pyrefly()}`)", f"pip install 'pyrefly=={PYREFLY_VERSION}', or set TENSI_PYREFLY to its path")
+        r.fail(
+            f"Pyrefly not found (`{pyrefly()}`)",
+            f"pip install 'pyrefly=={PYREFLY_VERSION}', or set TENSI_PYREFLY to its path",
+        )
         print(f"\n  {st.red('1')} problem; nothing else can be checked without Pyrefly")
         return 1
     try:
