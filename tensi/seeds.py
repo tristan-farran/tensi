@@ -360,6 +360,37 @@ def shape_unpack(st) -> tuple[ast.AST, list] | None:
     return None
 
 
+# tensor methods that return a tensor of the receiver's shape
+_SAME_SHAPE_METHODS = {
+    "float",
+    "double",
+    "half",
+    "bfloat16",
+    "long",
+    "int",
+    "bool",
+    "to",
+    "type",
+    "type_as",
+    "contiguous",
+    "detach",
+    "clone",
+    "cpu",
+    "cuda",
+    "requires_grad_",
+}
+
+
+def _same_shape_rebind(st) -> bool:
+    """`x = x.float()`, `x = x.to(device).contiguous()`: x keeps its shape."""
+    if not (isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)):
+        return False
+    name, v = st.targets[0].id, st.value
+    while isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr in _SAME_SHAPE_METHODS:
+        v = v.func.value
+    return isinstance(v, ast.Name) and v.id == name and v is not st.value
+
+
 def unpack_seeds(source: str, info: dict) -> dict[Key, list[str]]:
     """`b, t = idx.size()` (or `.shape`) in a function's own top-level body seeds `idx`."""
     try:
@@ -375,6 +406,8 @@ def unpack_seeds(source: str, info: dict) -> dict[Key, list[str]]:
         )
         rebound: set[str] = set()  # params assigned earlier in the body: an unpack then reads the new value
         for st in fn.body:
+            if _same_shape_rebind(st):
+                continue  # `z = z.float()` before `B, L, C = z.shape`: the unpack still names z's dims
             su = shape_unpack(st)
             if su is None or not isinstance(su[0], ast.Name) or su[0].id not in seedable or su[0].id in rebound:
                 rebound |= {n.id for n in ast.walk(st) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
@@ -1581,6 +1614,11 @@ def _suggest_axes(seed: list[str] | None, feature: str | None = None) -> str:
     return " ".join(out)
 
 
+def _is_plain_base(b) -> bool:
+    name = b.id if isinstance(b, ast.Name) else b.attr
+    return name in ("object", "ABC", "Protocol", "Generic", "NamedTuple", "Enum", "Exception")
+
+
 def unshaped_inputs(source: str, seeds: dict[Key, list[str]] | None) -> list[Hint]:
     """Module inputs where one annotation is the boundary annotation the module needs: a `forward`
     input tensi could not shape from anything in the file (no caller, no `x.size()` unpack, no
@@ -1599,12 +1637,24 @@ def unshaped_inputs(source: str, seeds: dict[Key, list[str]] | None) -> list[Hin
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id != c.name:
                 built_inside.add(n.func.id)
     classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    # modules: `nn.Module` subclasses, and subclasses of those defined in this file
+    modules: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for c in classes.values():
+            has_forward = any(isinstance(f, ast.FunctionDef) and f.name == "forward" for f in c.body)
+            if c.name not in modules and any(
+                (isinstance(b, ast.Attribute) and b.attr.endswith("Module"))
+                or (isinstance(b, ast.Name) and (b.id.endswith("Module") or b.id in modules))
+                # an imported base (`class GPT(Transformer)`) with a `forward` of its own
+                or (has_forward and isinstance(b, (ast.Name, ast.Attribute)) and not _is_plain_base(b))
+                for b in c.bases
+            ):
+                modules.add(c.name)
+                changed = True
     for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-        if not any(
-            (isinstance(b, ast.Attribute) and b.attr.endswith("Module"))
-            or (isinstance(b, ast.Name) and b.id.endswith("Module"))
-            for b in cls.bases
-        ):
+        if cls.name not in modules:
             continue
         fwd = next(
             (f for f in cls.body if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == "forward"),

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5
+
+* No changes to the extension; released alongside tensi 0.3.5.
+
 ## 0.3.4
 
 * No changes to the extension; released alongside tensi 0.3.4.

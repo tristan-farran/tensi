@@ -156,6 +156,18 @@ SIZE_CALLS: dict[str, tuple[object, tuple[str, ...]]] = {
 }
 
 
+# More size positions, used only to spot a config-object attribute used as a size; not for
+# inferring int parameters (`x.split(sizes)` often takes a list).
+_ATTR_SIZE_CALLS: dict[str, tuple[object, tuple[str, ...]]] = {
+    "split": ((0,), ("split_size", "split_size_or_sections")),
+    "repeat_interleave": ((0,), ("repeats",)),
+    "randperm": ((0,), ("n",)),
+    "full": ((0,), ("size",)),
+    "interpolate": ((), ("size",)),
+    "pad": ((1,), ("pad",)),
+}
+
+
 # Parameter names that are often tuples in PyTorch code, even when their default is an int.
 TUPLE_PRONE = {
     "kernel_size",
@@ -1199,6 +1211,181 @@ class _Rewriter:
                     self._edit((l1, c1), (l1, c1), "int(")
                     self._edit((l2, c2), (l2, c2), ")")
 
+    def _widen_pow_literals(self):
+        """Pyrefly 1.5.0 evaluates `x ** 2` with an int-literal exponent as `int` arithmetic (it lets a
+        tensor stand in for an int), so `(x ** 2).sum(1)` lost its shape; `x ** 0.5` and `x ** n`
+        were fine. `x ** int(2)` is the same value and Pyrefly types it as a tensor power."""
+        if self.tree is None:
+            return
+
+        def int_lit(e) -> bool:
+            if isinstance(e, ast.UnaryOp) and isinstance(e.op, (ast.USub, ast.UAdd)):
+                e = e.operand
+            return isinstance(e, ast.Constant) and type(e.value) is int
+
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+                left, exp = node.left, node.right
+            elif isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Pow):
+                left, exp = node.target, node.value
+            else:
+                continue
+            if not int_lit(exp) or (isinstance(left, ast.Constant) and type(left.value) in (int, float)):
+                continue  # `2 ** 10` stays a literal
+            (l1, c1), (l2, c2) = self._ast_span(exp)
+            self._edit((l1, c1), (l1, c1), "int(")
+            self._edit((l2, c2), (l2, c2), ")")
+
+    def _int_config_sizes(self):
+        """`self.n_head = config.n_head` with `config` a plain object: Pyrefly types the attribute
+        Unknown, and an Unknown size makes `q.view(B, T, self.n_head, hd)` or `x.split(self.n_embd,
+        dim=2)` a shapeless tensor, so every shape after it is lost. When such an attribute is used
+        as a size somewhere in its class, `int(...)` around the read keeps the rank: the size is an
+        unnamed `int` instead of Unknown. Values read from a typed config class keep their names
+        (those params are left alone), as do attributes set from int parameters."""
+        if self.tree is None:
+            return
+        size_calls = {**SIZE_CALLS, **_ATTR_SIZE_CALLS}
+
+        def self_attrs(expr) -> set[str]:
+            if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name) and expr.value.id == "self":
+                return {expr.attr}
+            if isinstance(expr, ast.BinOp):
+                return self_attrs(expr.left) | self_attrs(expr.right)
+            if isinstance(expr, ast.UnaryOp):
+                return self_attrs(expr.operand)
+            if isinstance(expr, (ast.Tuple, ast.List)):
+                return set().union(*(self_attrs(e) for e in expr.elts)) if expr.elts else set()
+            if isinstance(expr, ast.Starred):
+                return self_attrs(expr.value)
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id in ("min", "max", "int"):
+                return set().union(*(self_attrs(a) for a in expr.args)) if expr.args else set()
+            return set()
+
+        for cls in self.index.classes:
+            methods = [m for m in cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            init = next((m for m in methods if m.name == "__init__"), None)
+            if init is None:
+                continue
+            typed = set(self.config_params.get((init.lineno, init.name), {}))
+            objs = {
+                a.arg
+                for a in init.args.posonlyargs + init.args.args + init.args.kwonlyargs
+                if a.annotation is None and a.arg not in ("self", "cls") and a.arg not in typed
+            }
+            objs &= set(self.index.attr_reads.get(id(init), {}))  # read as `param.attr`: an object
+            # `self.config = config`: `self.config.n_head` elsewhere reads the same object
+            obj_attrs = {
+                t.attr
+                for n in ast.walk(init)
+                if isinstance(n, ast.Assign) and isinstance(n.value, ast.Name) and n.value.id in objs
+                for t in n.targets
+                if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self"
+            }
+            if not objs and not obj_attrs:
+                continue
+
+            def is_obj(e, own: set[str]) -> bool:
+                return (isinstance(e, ast.Name) and e.id in own) or (
+                    isinstance(e, ast.Attribute)
+                    and e.attr in obj_attrs
+                    and isinstance(e.value, ast.Name)
+                    and e.value.id == "self"
+                )
+
+            def reads_object(e, own: set[str]) -> bool:
+                if isinstance(e, ast.Attribute):
+                    base = e.value
+                    while isinstance(base, ast.Attribute) and not is_obj(base, own):
+                        base = base.value
+                    return is_obj(base, own)
+                if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) and e.func.id == "getattr":
+                    return bool(e.args) and is_obj(e.args[0], own)
+                if isinstance(e, ast.BinOp):
+                    sides = (e.left, e.right)
+                    return any(reads_object(x, own) for x in sides) and all(
+                        reads_object(x, own) or (isinstance(x, ast.Constant) and type(x.value) is int) for x in sides
+                    )
+                return False
+
+            def unknownish(e, own: set[str]) -> bool:
+                """A value Pyrefly can only see as Unknown (or a union with Unknown): an object read, an
+                element of a list (`self.levels[0]`), `sum(...)`, or arithmetic / a choice with one of
+                those in it. Wrapping it in `int()` costs nothing a name could have given."""
+                if reads_object(e, own):
+                    return True
+                if isinstance(e, ast.Subscript):
+                    return not isinstance(e.slice, ast.Slice)
+                if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) and e.func.id == "sum":
+                    return True
+                if isinstance(e, ast.BinOp):
+                    return unknownish(e.left, own) or unknownish(e.right, own)
+                if isinstance(e, ast.IfExp):
+                    return unknownish(e.body, own) or unknownish(e.orelse, own)
+                return False
+
+            def size_uses(m):
+                """Expressions in `m` at a size position: size arguments of known calls, slice bounds."""
+                for n in ast.walk(m):
+                    if isinstance(n, ast.Call):
+                        rule = size_calls.get(_call_name(n.func) or "")
+                        if rule is None:
+                            continue
+                        positions, keywords = rule
+                        yield from (a for i, a in enumerate(n.args) if positions == ALL or i in positions)
+                        yield from (k.value for k in n.keywords if k.arg and (k.arg in keywords or "*" in keywords))
+                    elif isinstance(n, ast.Slice):
+                        yield from (b for b in (n.lower, n.upper) if b is not None)
+
+            def wrap(value):
+                if self._claim(value):
+                    (l1, c1), (l2, c2) = self._ast_span(value)
+                    self._edit((l1, c1), (l1, c1), "int(")
+                    self._edit((l2, c2), (l2, c2), ")")
+
+            # attributes used as a size anywhere in the class, directly or through a local
+            sized: set[str] = set()
+            for m in methods:
+                own = objs if m is init else set()
+                local_attrs: dict[str, set[str]] = {}
+                local_values: dict[str, list] = {}
+                for n in ast.walk(m):
+                    if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
+                        local_attrs.setdefault(n.targets[0].id, set()).update(self_attrs(n.value))
+                        local_values.setdefault(n.targets[0].id, []).append(n.value)
+                    elif isinstance(n, (ast.AugAssign, ast.AnnAssign, ast.For, ast.comprehension)):
+                        t = n.target
+                        for name in (x.id for x in ast.walk(t) if isinstance(x, ast.Name)):
+                            local_values.setdefault(name, []).append(None)
+                    elif isinstance(n, ast.Assign):
+                        for t in n.targets:
+                            for name in (x.id for x in ast.walk(t) if isinstance(x, ast.Name)):
+                                local_values.setdefault(name, []).append(None)
+                sized_locals: set[str] = set()
+                for a in size_uses(m):
+                    sized |= self_attrs(a)
+                    for name in _bare_names(a):
+                        sized |= local_attrs.get(name, set())
+                        sized_locals.add(name)
+                # `P = config.prefix_len` (or `self.config.prefix_len`) then `torch.full((P, T), ...)`
+                for name in sized_locals:
+                    values = local_values.get(name, [])
+                    if values and all(v is not None and unknownish(v, own) for v in values):
+                        for v in values:
+                            wrap(v)
+            stores: dict[str, list] = {}
+            for n in ast.walk(cls):
+                if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                    for t in n.targets if isinstance(n, ast.Assign) else [n.target]:
+                        if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self":
+                            stores.setdefault(t.attr, []).append(n)
+            for attr in sized:
+                nodes = stores.get(attr, [])
+                if not nodes or not all(isinstance(n, ast.Assign) and unknownish(n.value, objs) for n in nodes):
+                    continue  # set elsewhere from something else: leave it to Pyrefly
+                for n in nodes:
+                    wrap(n.value)
+
     # ---------- return annotations that hide what the body computes ----------
     _ERASING = re.compile(
         r"(?:torch\.)?(?:[A-Z][a-z]*)?Tensor|(?:torch\.)?nn\.[A-Z]\w*|Module|[A-Z]\w*(?:Conv|Norm)\w*|"
@@ -1878,6 +2065,8 @@ class _Rewriter:
         self._type_layer_factories()
         self._rewrite_list_indices()
         self._wrap_minmax_sizes()
+        self._int_config_sizes()
+        self._widen_pow_literals()
         self._widen_literal_choices()
         self._absolutize_relative_imports()
         if shape_edits:

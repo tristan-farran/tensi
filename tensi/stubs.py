@@ -357,6 +357,17 @@ def _binary_ops(text: str) -> str | None:
     return out if n >= len(_BINARY_OPS) - 4 else None
 
 
+_SPLIT_SUM_OLD = """    total = dsl.sum(sections)
+    if dsl.is_concrete_int(extent) and dsl.is_concrete_int(total) and extent != total:
+        return dsl.Invalid("split sections must sum to the selected dimension")
+"""
+_SPLIT_SUM_NEW = """    if not any(not dsl.is_concrete_int(section) for section in sections):
+        total = dsl.sum(sections)
+        if dsl.is_concrete_int(extent) and dsl.is_concrete_int(total) and extent != total:
+            return dsl.Invalid("split sections must sum to the selected dimension")
+"""
+
+
 PATCHES: list[Patch] = [
     Patch("dsl-norm-checks", "_shapes.pyi", "Shape functions used by the typed norm layers below.", new=_DSL),
     Patch("nn-import-dsl", "nn/__init__.pyi", "Import the two new shape functions.", fn=_nn_imports),
@@ -449,6 +460,14 @@ PATCHES: list[Patch] = [
         "default made every list that is not a literal a 0-d tensor, so `.unsqueeze(1)` read as an error.",
         old="def tensor[Shape: IntTuple = []](\n    data: Tensor[Shape] | RegularNestedList[Shape, _TensorScalar],\n",
         new="def tensor[Shape: IntTuple](\n    data: Tensor[Shape] | RegularNestedList[Shape, _TensorScalar],\n",
+    ),
+    Patch(
+        "split-gradual-sections",
+        "_shapes.pyi",
+        "x.split([n, m, m], dim=2) with unannotated sizes keeps every piece's rank (`[b, t, int]`); "
+        "the sum check touched the gradual sizes and made the whole result a bare tuple.",
+        old=_SPLIT_SUM_OLD,
+        new=_SPLIT_SUM_NEW,
     ),
     Patch(
         "binary-ops-broadcast",

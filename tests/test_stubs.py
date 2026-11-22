@@ -163,3 +163,38 @@ def test_binary_ops_broadcast_both_operands(tmp_path):
     got = [e["description"].split("revealed type: ")[-1] for e in errors if e["name"] == "reveal-type"]
     assert got == ["Tensor[[2, 3]]", "Tensor[[5, 2, 3]]", "Tensor[[2, 3]]", "Tensor[[2, 3]]", "Tensor[[2, 3]]"], got
     assert not [e for e in errors if e["name"] != "reveal-type"], errors
+
+
+def test_split_with_unannotated_sections_keeps_rank(tmp_path):
+    import json
+
+    (tmp_path / "m.py").write_text(
+        "import torch\n"
+        "from typing import reveal_type\n"
+        "def f(x: torch.Tensor[[4, 7, 96]], n: int):\n"
+        "    reveal_type(x.split([n, n, 32], dim=2))\n"
+        "    reveal_type(x.split([32, 32, 32], dim=2))\n"
+        "    x.split([32, 32], dim=2)\n"
+    )
+    proc = subprocess.run(
+        [
+            os.environ.get("TENSI_PYREFLY", "pyrefly"),
+            "check",
+            "m.py",
+            "--preset",
+            "default",
+            "--output-format",
+            "json",
+            *stubs.search_args(),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    errors = json.loads(proc.stdout)["errors"]
+    got = [e["description"].split("revealed type: ")[-1] for e in errors if e["name"] == "reveal-type"]
+    assert got == [
+        "tuple[Tensor[[4, 7, int]], Tensor[[4, 7, int]], Tensor[[4, 7, 32]]]",
+        "tuple[Tensor[[4, 7, 32]], Tensor[[4, 7, 32]], Tensor[[4, 7, 32]]]",
+    ], got
+    assert any("must sum to the selected dimension" in e["description"] for e in errors), errors

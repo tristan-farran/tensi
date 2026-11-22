@@ -324,3 +324,18 @@ def test_unknown_flow_follows_the_tensor_not_its_metadata():
     got = _unknown_names(fn)
     assert {"h", "z", "w", "q", "m", "u"} <= got, got
     assert not {"B", "L", "att", "y", "x", "c", "v"} & got, got
+
+
+def test_sizes_from_config_objects_keep_shapes():
+    """Sizes read from a plain config object, a list or `sum(...)` were Unknown to Pyrefly and
+    erased every `view`/`split`/`full` after them; `x ** 2` read as an int; `z = z.float()` before
+    the unpack hid z's dims; a subclass of a local module base got no annotation hint."""
+    out = " ".join(run("peek", "configsizes.py").stdout.split())
+    assert "15 q, k, v [B, T, int]" in out and "16 q [B, T, int, int]" in out, out
+    assert "35 z [B, L, C]" in out and "37 d [B, L]" in out, out
+    assert "[?]" not in out, out
+    shadow = run("shadow", "configsizes.py").stdout
+    assert "self.n_head = int(config.n_head)" in shadow and "self.dropout = config.dropout" in shadow
+    assert "self.L = int(sum(self.levels))" in shadow and "P = int(config.prefix_len)" in shadow
+    assert "z**int(2)" in shadow
+    assert run("check", "configsizes.py").returncode == 0

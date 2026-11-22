@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.5
+
+* Sizes read from a plain config object keep shapes. `self.n_head = config.n_head`, `P =
+  config.prefix_len` or `self.L = sum(self.levels)` were Unknown to Pyrefly, and one Unknown size
+  made every `view`, `split`, `full` or slice after it shapeless. When such a value is used as a size,
+  tensi reads it as an `int` in the rewritten code it checks (your file is unchanged).
+* `x.split([n, m, m], dim=2)` with sizes that aren't literals keeps each piece's rank.
+* `x ** 2` keeps x's shape (Pyrefly typed an int-literal power of a tensor as an `int`).
+* `z = z.float()` (or `.to(...)`, `.contiguous()`, ...) before `B, L, C = z.shape` no longer stops
+  tensi naming z's dims.
+* Modules that subclass your own module base, or an imported one, get the "annotate the input of"
+  hint like direct `nn.Module` subclasses.
+
 ## 0.3.4
 
 * No more false shape errors from a guessed input shape. An input tensi had not seeded yet is
