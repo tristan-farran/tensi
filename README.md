@@ -26,4 +26,6 @@ tensi peek model.py   # every tensor's shape
 tensi check src/      # shape errors; exits 1 if any
 ```
 
+tensi says when a newer release is out and how to install it (checked at most once a day, never in CI; `TENSI_NO_UPDATE_CHECK=1` turns it off).
+
 <sub>Built on Pyrefly :)</sub>

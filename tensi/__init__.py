@@ -5,6 +5,7 @@ import shutil
 import sys
 
 __version__ = "0.3.4"
+PYREFLY_VERSION = "1.5.0"  # must match the pins in pyproject.toml
 
 
 def pyrefly() -> str:

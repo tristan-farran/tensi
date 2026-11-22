@@ -16,9 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import env, pyrefly, stubs
-
-PYREFLY_VERSION = "1.5.0"
+from . import PYREFLY_VERSION, env, pyrefly, stubs
 PROBE = """import torch
 from typing import reveal_type
 reveal_type(torch.zeros(2, 3).transpose(0, 1))
@@ -121,7 +119,7 @@ def run(folder: str | None = None) -> int:
     # 1. Pyrefly itself
     exe = shutil.which(pyrefly()) or (pyrefly() if Path(pyrefly()).exists() else None)
     if exe is None:
-        r.fail(f"Pyrefly not found (`{pyrefly()}`)", "pip install 'pyrefly==1.5.0', or set TENSI_PYREFLY to its path")
+        r.fail(f"Pyrefly not found (`{pyrefly()}`)", f"pip install 'pyrefly=={PYREFLY_VERSION}', or set TENSI_PYREFLY to its path")
         print(f"\n  {st.red('1')} problem; nothing else can be checked without Pyrefly")
         return 1
     try:
@@ -158,7 +156,7 @@ def run(folder: str | None = None) -> int:
                 f"{d}  (also carries {', '.join(carried) or 'nothing else'})",
             )
         if "shape_extensions" not in carried:
-            r.fail("shape_extensions not found", "pip install 'pyrefly-shape-extensions==1.5.0'")
+            r.fail("shape_extensions not found", f"pip install 'pyrefly-shape-extensions=={PYREFLY_VERSION}'")
 
     # 3. The interpreter Pyrefly uses for this folder
     interp = pyrefly_interpreter(where)
@@ -209,6 +207,13 @@ def run(folder: str | None = None) -> int:
             "tensi is neither in this project's environment nor on PATH; the VS Code extension won't find it",
             "`uv add --dev tensi-shapes` in the project, or `uv tool install tensi-shapes` once",
         )
+
+    # 6. A newer tensi
+    from . import update
+
+    found = update.latest()
+    if update.newer(found or ""):
+        r.warn(f"tensi {found} is available (this is {__version__})", update.upgrade_command())
 
     print()
     if r.failed:

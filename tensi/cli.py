@@ -275,7 +275,22 @@ def _main(argv: list[str] | None = None) -> int:
     lsp = sub.add_parser("lsp", help="run the language server on stdio")
     lsp.add_argument("--pyrefly", default=pyrefly())
     args = ap.parse_args(argv)
+    if args.cmd in ("peek", "check"):
+        from . import update
 
+        check = update.Check()  # in the background; reported after the command's own output
+        warn = update.pyrefly_mismatch()
+        if warn:
+            print(f"tensi: warning: {warn}", file=sys.stderr)
+        code = _run(args)
+        note = check.message() if sys.stderr.isatty() else None
+        if note:
+            print(f"\n{note}", file=sys.stderr)
+        return code
+    return _run(args)
+
+
+def _run(args) -> int:
     if args.cmd == "peek":
         python_files([args.file])  # a clean message for a missing file
         return cmd_peek(args.file)

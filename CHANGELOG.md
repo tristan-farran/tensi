@@ -14,6 +14,12 @@
   a tensor stand in for a Python scalar, so the right operand was read as a scalar and the result
   kept the left one's shape: `self.scale[i] * x` with a 0-d `scale[i]` was 0-d (erasing every
   shape after it in nanochat-style residual mixing), and `[2, 3] + [5, 2, 3]` was `[2, 3]`.
+* tensi tells you when a newer release is out, with the command that updates your installation
+  (`uv tool upgrade tensi-shapes`, the project's `uv add`, pip, or pipx): after `tensi peek` and
+  `tensi check` in a terminal, in `tensi doctor`, and once per session in the editor. PyPI is asked
+  at most once a day; the check is off in CI and with `TENSI_NO_UPDATE_CHECK=1`.
+* tensi warns (CLI, editor) when the Pyrefly it runs is not 1.5.0, the version it is pinned to and
+  tested against, instead of quietly losing shapes. `pyrefly-shape-extensions` is pinned too.
 
 ## 0.3.3
 

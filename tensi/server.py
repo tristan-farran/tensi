@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
-from . import env, stubs
+from . import PYREFLY_VERSION, env, stubs, update
 from .cli import drop_imprecise, is_rewrite_artifact, is_shape_diagnostic
 from .mapping import PositionMap, clean_json
 from .rewrite import find_config_classes, rewrite
@@ -329,6 +329,13 @@ class Proxy:
         self.solve_cv = threading.Condition()
         threading.Thread(target=self.solver_loop, daemon=True).start()
 
+    def notify_setup(self):
+        """Once per session, off the request path: a Pyrefly other than the pinned one (a warning,
+        since shapes can quietly go missing), and a newer tensi on PyPI (with its install command)."""
+        for kind, text in ((2, update.pyrefly_mismatch(self.pyrefly_cmd[0])), (3, update.update_message(update.latest()))):
+            if text:
+                self.editor.write({"jsonrpc": "2.0", "method": "window/showMessage", "params": {"type": kind, "message": text}})
+
     # ---------- child process ----------
     def start_child(self):
         self.child = subprocess.Popen(
@@ -419,6 +426,7 @@ class Proxy:
             return
         if method == "initialized":
             self.server.write(msg)
+            threading.Thread(target=self.notify_setup, daemon=True).start()
             return
         if method == "shutdown":
             self.shutting_down = True
@@ -973,7 +981,7 @@ def serve(pyrefly: str = "pyrefly") -> int:
     except OSError as exc:
         print(
             f"tensi: cannot start Pyrefly ({pyrefly}): {exc}. Install it with "
-            f"`pip install pyrefly==1.5.0` in this environment, or set TENSI_PYREFLY.",
+            f"`pip install pyrefly=={PYREFLY_VERSION}` in this environment, or set TENSI_PYREFLY.",
             file=sys.stderr,
         )
         return 1
