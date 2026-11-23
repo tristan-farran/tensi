@@ -43,8 +43,8 @@ def forward(self, idx: Shaped[torch.Tensor, "batch seq"]):
 * In VS Code each such input has a blue hint with the line to write and a quick fix (Ctrl+. /
   Cmd+.) that writes it, or annotates every input in the file at once; the status bar counts them,
   and hovering a tensor with no shape says which input it depends on. `tensi peek` lists the same.
-* jaxtyping has to be installed in your project (`uv add jaxtyping` or `pip install jaxtyping`).
-  `Float`, `Int` and `Bool` work as well as `Shaped`.
+* No jaxtyping in your project? The quick fix imports it under `if TYPE_CHECKING:`, so your code
+  runs without it. `Float`, `Int` and `Bool` work as well as `Shaped`.
 
 tensi says when a newer release is out and how to install it (checked at most once a day, never in CI; `TENSI_NO_UPDATE_CHECK=1` turns it off).
 

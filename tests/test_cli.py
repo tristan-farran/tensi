@@ -150,7 +150,7 @@ def test_peek_names_the_input_that_needs_an_annotation():
     out = " ".join(run("peek", "norms.py").stdout.split())
     hints = out.split("Annotate it:")[1]
     assert '29 Broken.forward(x) def forward(self, x: Shaped[torch.Tensor, "batch seq"]):' in hints, out
-    assert "add once: from jaxtyping import Shaped" in hints, out
+    assert "add once, with the imports: from jaxtyping import Shaped" in hints, out
     assert "Encoder.forward" not in hints  # shaped from x.shape
 
 
@@ -384,4 +384,31 @@ def test_hints_cover_every_input_that_needs_an_annotation():
     ], hints
     fix = fix_for(src, hints[0])
     assert fix.snippet == 'def rope(positions: Shaped[torch.Tensor, "n"], dim):', fix
-    assert fix.imports == ["from jaxtyping import Shaped"] and fix.import_line == 2, fix
+    assert fix.imports == ["from jaxtyping import Shaped"] and fix.inserts == [(2, "from jaxtyping import Shaped\n")], (
+        fix
+    )
+
+
+def test_annotated_names_reach_helpers():
+    """An input annotated under `if TYPE_CHECKING:` names its axes, and those names survive a same-class
+    helper even when another caller only knows `int`; a call through a ModuleDict loop item is
+    unknown rather than a wrong guess (which read as an `x + h` mismatch)."""
+    out = " ".join(run("peek", "annotated.py").stdout.split())
+    assert "25 x [batch, seq, dim]" in out and "26 x [batch, seq, dim]" in out, out
+    assert run("check", "annotated.py").returncode == 0
+
+
+def test_fix_without_jaxtyping_imports_it_for_type_checking_only(monkeypatch):
+    from tensi import hints
+
+    src = '"""A model."""\nimport torch\n\n\ndef f(x):\n    return x.transpose(0, 1)\n'
+    (h,) = hints.unshaped_inputs(src, {})
+    monkeypatch.setattr(hints, "project_python", lambda path: (False, (3, 12)))
+    fix = hints.fix_for(src, h, "model.py")
+    assert not fix.runtime and fix.annotation == 'Shaped[torch.Tensor, "batch n"]', fix
+    assert (1, "from __future__ import annotations\n") in fix.inserts, fix  # after the docstring
+    assert (2, "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from jaxtyping import Shaped\n") in fix.inserts
+    monkeypatch.setattr(hints, "project_python", lambda path: (False, (3, 14)))  # lazy annotations
+    assert [t for _, t in hints.fix_for(src, h, "model.py").inserts if "__future__" in t] == []
+    monkeypatch.setattr(hints, "project_python", lambda path: (True, (3, 12)))
+    assert hints.fix_for(src, h, "model.py").inserts == [(2, "from jaxtyping import Shaped\n")]

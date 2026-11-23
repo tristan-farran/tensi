@@ -167,11 +167,11 @@ def cmd_peek(path: str) -> int:
     print(f"\n  {summary}" + (f", {unknown} unknown" if unknown else ""))
     hints = getattr(rows, "hints", [])
     if hints:
-        print_hints(hints, "\n".join(src), st, unknown)
+        print_hints(hints, "\n".join(src), st, unknown, path)
     return 0
 
 
-def print_hints(hints, source: str, st, unknown: int) -> None:
+def print_hints(hints, source: str, st, unknown: int, path: str | None = None) -> None:
     """What to annotate and exactly what to write: the input, the signature as it would read, and
     the import it needs once per file."""
     from .hints import fix_for
@@ -185,17 +185,27 @@ def print_hints(hints, source: str, st, unknown: int) -> None:
         f" Annotate {'them' if n != 1 else 'it'}:\n"
     )
     imports: dict[str, None] = {}
+    inserts: dict[str, None] = {}
     for h in hints:
-        fix = fix_for(source, h)
+        fix = fix_for(source, h, path)
         imports.update(dict.fromkeys(fix.imports))
+        inserts.update(dict.fromkeys(t for _, t in fix.inserts))
         known = f"  {st.dim('now ' + '[' + ', '.join(t.lstrip('~') for t in h.seed) + ']')}" if h.seed else ""
         print(f"  {st.dim(f'{h.line:>4}')}  {h.where}({h.param}){known}")
         print(f"        {st.violet(fix.snippet)}")
     print()
-    if imports:
-        print(
-            f"  {st.dim('add once:')} {'; '.join(imports)}  {st.dim('(jaxtyping must be installed in your project)')}"
-        )
+    if inserts:
+        print(f"  {st.dim('add once, with the imports:')}")
+        for text in inserts:
+            for line in text.rstrip("\n").split("\n"):
+                print(f"        {st.violet(line)}")
+        if any("TYPE_CHECKING" in i for i in imports):
+            print(
+                st.dim(
+                    "  jaxtyping isn't installed in this project, so it is imported for type checking only:\n"
+                    "  your code runs without it (or install jaxtyping and import it normally)."
+                )
+            )
     print(
         st.dim(
             "  One name per dimension, in order. A size name from __init__ (like n_embd) links that axis to the\n"

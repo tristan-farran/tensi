@@ -9,6 +9,9 @@ file. Each such input gets a hint: the input, why tensi can't shape it, the anno
 from __future__ import annotations
 
 import ast
+import functools
+import subprocess
+from pathlib import Path
 from typing import NamedTuple
 
 from .seeds import Key, _feature_axis, _is_plain_base, _suggest_axes
@@ -32,9 +35,10 @@ class Hint(NamedTuple):
 
 class Fix(NamedTuple):
     annotation: str  # `Shaped[Tensor, "batch seq"]`
-    imports: list[str]  # import lines the file still needs
-    import_line: int  # 0-based line to insert them before
+    imports: list[str]  # what the file still needs, as a person would read it
+    inserts: list[tuple[int, str]]  # (0-based line to insert before, text) that add those imports
     snippet: str  # the `def` line as it would read, or `x: ...` when the signature spans lines
+    runtime: bool = True  # False: jaxtyping isn't installed, so it is imported for type checking only
 
 
 # methods and attributes only a tensor (or array) has: a parameter used like this is a tensor
@@ -87,6 +91,41 @@ def _same_shape_of(e, param: str) -> bool:
     return isinstance(e, ast.Name) and e.id == param
 
 
+def _same_rank_of(e, param: str) -> bool:
+    """Like `_same_shape_of`, also through a module of this one (`self.ln_1(x)`): layers keep the
+    rank of what they get far more often than not, so `self.attn(self.ln_1(x))` tells x's rank."""
+    while True:
+        if _same_shape_of(e, param):
+            return True
+        if (
+            isinstance(e, ast.Call)
+            and e.args
+            and isinstance(e.func, ast.Attribute)
+            and isinstance(e.func.value, ast.Name)
+            and e.func.value.id == "self"
+        ):
+            e = e.args[0]
+            continue
+        return False
+
+
+def _rank_view_of(e, param: str) -> bool:
+    """`p`, or p reshaped without changing its rank (`p.transpose(-1, -2)`, `p.float()`)."""
+    while (
+        isinstance(e, ast.Call)
+        and isinstance(e.func, ast.Attribute)
+        and e.func.attr
+        in _SAME_SHAPE
+        | {
+            "transpose",
+            "permute",
+            "swapaxes",
+        }
+    ):
+        e = e.func.value
+    return isinstance(e, ast.Name) and e.id == param
+
+
 def _guess_rank(fn, param: str) -> int | None:
     """The rank the body implies: `p[:, None]` has 1+, `p.shape[2]` 3+, `b, t, d = p.shape` 3."""
     rank = 0
@@ -113,6 +152,27 @@ def _guess_rank(fn, param: str) -> int | None:
             and n.args
         ):
             idx = n.args[0]
+        if (
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and _same_shape_of(n.func.value, param)
+            and n.func.attr in ("transpose", "swapaxes", "permute", "flatten", "unbind", "select", "narrow")
+        ):
+            if n.func.attr == "permute":
+                rank = max(rank, len(n.args))
+            for a in n.args[: 2 if n.func.attr in ("transpose", "swapaxes") else 1]:
+                if isinstance(a, ast.Constant) and type(a.value) is int and a.value >= 0:
+                    rank = max(rank, a.value + 1)
+                elif isinstance(a, ast.UnaryOp) and isinstance(a.operand, ast.Constant):
+                    rank = max(rank, int(a.operand.value))
+        if (
+            isinstance(n, ast.Call)
+            and (getattr(n.func, "attr", None) or getattr(n.func, "id", None)) == "interpolate"
+            and n.args
+            and _rank_view_of(n.args[0], param)
+        ):
+            size = next((k.value for k in n.keywords if k.arg in ("size", "scale_factor")), None)
+            rank = max(rank, 2 + (len(size.elts) if isinstance(size, ast.Tuple) else 1))
         if isinstance(idx, ast.UnaryOp) and isinstance(idx.op, ast.USub) and isinstance(idx.operand, ast.Constant):
             rank = max(rank, int(idx.operand.value))
         elif isinstance(idx, ast.Constant) and type(idx.value) is int:
@@ -134,6 +194,46 @@ def _guess_rank(fn, param: str) -> int | None:
             ):
                 return len(n.targets[0].elts)
     return rank or None
+
+
+def _rank_from_callees(cls, fn, param: str, classes: dict, seeds: dict) -> int | None:
+    """The rank tensi already worked out where `param` goes: `self.attn(x)` with `self.attn = Attn(...)`
+    and Attn.forward seeded `[b, t, c]`, or `self.helper(x)` with the helper seeded."""
+    if cls is None:
+        return None
+    built: dict[str, str] = {}  # self attr -> class name constructed for it
+    for f in cls.body:
+        if isinstance(f, ast.FunctionDef) and f.name == "__init__":
+            for n in ast.walk(f):
+                if (
+                    isinstance(n, ast.Assign)
+                    and len(n.targets) == 1
+                    and isinstance(n.targets[0], ast.Attribute)
+                    and isinstance(n.value, ast.Call)
+                    and isinstance(n.value.func, ast.Name)
+                ):
+                    built[n.targets[0].attr] = n.value.func.id
+    methods = {f.name: f for f in cls.body if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for n in sorted((n for n in ast.walk(fn) if isinstance(n, ast.Call)), key=lambda n: (n.lineno, n.col_offset)):
+        if not (n.args and _same_rank_of(n.args[0], param)):
+            continue
+        f = n.func
+        if not (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "self"):
+            continue
+        if f.attr in methods:
+            target = methods[f.attr]
+            names = [a.arg for a in target.args.posonlyargs + target.args.args][1:]
+            seed = seeds.get((cls.name, f.attr, names[0])) if names else None
+        elif f.attr in built and built[f.attr] in classes:
+            sub = classes[built[f.attr]]
+            fwd = next((x for x in sub.body if isinstance(x, ast.FunctionDef) and x.name == "forward"), None)
+            names = [a.arg for a in fwd.args.posonlyargs + fwd.args.args][1:] if fwd else []
+            seed = seeds.get((sub.name, "forward", names[0])) if names else None
+        else:
+            continue
+        if seed:
+            return len(seed)
+    return None
 
 
 def _axes_for_rank(rank: int | None) -> str:
@@ -252,7 +352,12 @@ def unshaped_inputs(source: str, seeds: dict[Key, list[str]] | None) -> list[Hin
                 if cname in built_inside or (seed and "int" not in seed):
                     continue  # another module here passes it: annotating that one's input shapes this too
                 feature = None if seed else _feature_axis(cls, fwd, a.arg, classes)
-                add(cname, fwd, a, seed, _suggest_axes(seed, feature))
+                rank = (
+                    None
+                    if seed or feature
+                    else _rank_from_callees(cls, fwd, a.arg, classes, seeds) or _guess_rank(fwd, a.arg)
+                )
+                add(cname, fwd, a, seed, _axes_for_rank(rank) if rank else _suggest_axes(seed, feature))
             elif (
                 d is None
                 and not seed
@@ -260,7 +365,8 @@ def unshaped_inputs(source: str, seeds: dict[Key, list[str]] | None) -> list[Hin
                 and _tensor_like(fwd, a.arg, own_methods.get(cname, frozenset()))
             ):
                 # a second required input (`forward(self, x, targets)`) that nothing shapes either
-                add(cname, fwd, a, None, _suggest_axes(None))
+                rank = _rank_from_callees(cls, fwd, a.arg, classes, seeds) or _guess_rank(fwd, a.arg)
+                add(cname, fwd, a, None, _axes_for_rank(rank))
 
     # 2. helpers and other methods nothing in this file calls
     owner: dict[int, str] = {}
@@ -283,16 +389,64 @@ def unshaped_inputs(source: str, seeds: dict[Key, list[str]] | None) -> list[Hin
             if a.arg in defaults or seeds.get((cname, fn.name, a.arg)):
                 continue
             if _tensor_like(fn, a.arg, own_methods.get(cname, frozenset())):
-                add(cname, fn, a, None, _axes_for_rank(_guess_rank(fn, a.arg)))
-    return sorted(out, key=lambda h: (h.line, h.col))
+                rank = _rank_from_callees(classes.get(cname), fn, a.arg, classes, seeds) or _guess_rank(fn, a.arg)
+                add(cname, fn, a, None, _axes_for_rank(rank))
+    # inputs of one function share an axis only through a name, so guesses must agree: a second input
+    # takes the first one's leading names (`x` "batch seq dim", `mask` "batch seq"), the convention
+    # for masks, targets and positions; a longer one keeps its own names past those
+    out = sorted(out, key=lambda h: (h.line, h.col))
+    first: dict[tuple, list[str]] = {}
+    for i, h in enumerate(out):
+        if h.seed:
+            continue
+        key = (h.cls, h.fn, h.def_line)
+        names = h.axes.split()
+        if key not in first:
+            first[key] = names
+            continue
+        lead = first[key]
+        merged = lead[: len(names)] + [n if n not in lead else f"{n}2" for n in names[len(lead) :]]
+        out[i] = h._replace(axes=" ".join(merged))
+    return out
 
 
 # ---------------------------------------------------------------- what to write
 
 
-def fix_for(source: str, h: Hint) -> Fix:
+@functools.lru_cache(maxsize=32)
+def _project_python(root: str) -> tuple[bool | None, tuple[int, int] | None]:
+    """(jaxtyping importable, Python version) for the project's interpreter; None where unknown."""
+    from . import env
+
+    python = env.interpreter(Path(root))
+    if not python:
+        return None, None
+    try:
+        out = subprocess.run(
+            [python, "-c", "import importlib.util as u; print(u.find_spec('jaxtyping') is not None)"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        ).stdout.strip()
+        has = {"True": True, "False": False}.get(out)
+    except (OSError, subprocess.SubprocessError):
+        has = None
+    return has, env.interpreter_version(python)
+
+
+def project_python(path: str | Path | None) -> tuple[bool | None, tuple[int, int] | None]:
+    if path is None:
+        return None, None
+    from . import env
+
+    return _project_python(str(env.project_root(path)))
+
+
+def fix_for(source: str, h: Hint, path: str | Path | None = None) -> Fix:
     """The annotation for `h` in this file's own spelling, the imports it still lacks, and how the
-    signature line reads with it."""
+    signature line reads with it. When the project (found from `path`) has no jaxtyping, the import
+    goes under `if TYPE_CHECKING:` so the code still runs without it, with `from __future__ import
+    annotations` before Python 3.14 so the annotation itself is never evaluated."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -301,31 +455,70 @@ def fix_for(source: str, h: Hint) -> Fix:
     jax_modules: set[str] = set()
     tensor_name = None
     torch_module = None
+    type_checking = future = False
     last_import = None
     for st in tree.body:
-        if isinstance(st, ast.ImportFrom):
-            last_import = st
-            for al in st.names:
-                bound = al.asname or al.name
-                if st.module == "jaxtyping":
-                    jax_names.add(bound)
-                if st.module == "torch" and al.name == "Tensor":
-                    tensor_name = bound
-        elif isinstance(st, ast.Import):
-            last_import = st
-            for al in st.names:
-                if al.name == "jaxtyping":
-                    jax_modules.add(al.asname or al.name)
-                if al.name == "torch":
-                    torch_module = al.asname or "torch"
-    imports = []
+        nodes = [st]
+        if isinstance(st, ast.If):  # `if TYPE_CHECKING:` blocks
+            nodes = [n for n in st.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+        for n in nodes:
+            if isinstance(n, ast.ImportFrom):
+                if n is st:
+                    last_import = st
+                for al in n.names:
+                    bound = al.asname or al.name
+                    if n.module == "jaxtyping":
+                        jax_names.add(bound)
+                    if n.module == "torch" and al.name == "Tensor":
+                        tensor_name = bound
+                    if n.module == "typing" and al.name == "TYPE_CHECKING":
+                        type_checking = True
+                    if n.module == "__future__" and al.name == "annotations":
+                        future = True
+            elif isinstance(n, ast.Import):
+                if n is st:
+                    last_import = st
+                for al in n.names:
+                    if al.name == "jaxtyping":
+                        jax_modules.add(al.asname or al.name)
+                    if al.name == "torch":
+                        torch_module = al.asname or "torch"
+    docstring = (
+        tree.body
+        and isinstance(tree.body[0], ast.Expr)
+        and isinstance(getattr(tree.body[0], "value", None), ast.Constant)
+        and isinstance(tree.body[0].value.value, str)
+    )
+    if last_import is not None:
+        import_line = last_import.end_lineno
+    elif docstring:
+        import_line = tree.body[0].end_lineno  # after the module docstring
+    else:
+        import_line = 0
+    has_jax, version = project_python(path)
+    runtime = has_jax is not False or bool(jax_names or jax_modules)
+    imports: list[str] = []
+    inserts: list[tuple[int, str]] = []
     if "Shaped" in jax_names:
         dtype = "Shaped"
     elif jax_modules:
         dtype = f"{sorted(jax_modules)[0]}.Shaped"
     else:
         dtype = "Shaped"
-        imports.append("from jaxtyping import Shaped")
+        if runtime:
+            imports.append("from jaxtyping import Shaped")
+            inserts.append((import_line, "from jaxtyping import Shaped\n"))
+        else:
+            block = ("" if type_checking else "from typing import TYPE_CHECKING\n") + (
+                "if TYPE_CHECKING:\n    from jaxtyping import Shaped\n"
+            )
+            if not future and (version is None or version < (3, 14)):
+                first = tree.body[1] if docstring and len(tree.body) > 1 else (tree.body[0] if tree.body else None)
+                at = (tree.body[0].end_lineno if docstring else (first.lineno - 1 if first else 0)) or 0
+                imports.append("from __future__ import annotations")
+                inserts.append((at, "from __future__ import annotations\n"))
+            imports.append("from jaxtyping import Shaped  (under `if TYPE_CHECKING:`)")
+            inserts.append((import_line, block))
     if tensor_name:
         tensor = tensor_name
     elif torch_module:
@@ -333,17 +526,8 @@ def fix_for(source: str, h: Hint) -> Fix:
     else:
         tensor = "Tensor"
         imports.append("from torch import Tensor")
+        inserts.append((import_line, "from torch import Tensor\n"))
     annotation = f'{dtype}[{tensor}, "{h.axes}"]'
-    if last_import is not None:
-        import_line = last_import.end_lineno
-    elif (
-        tree.body
-        and isinstance(tree.body[0], ast.Expr)
-        and isinstance(getattr(tree.body[0], "value", None), ast.Constant)
-    ):
-        import_line = tree.body[0].end_lineno  # after the module docstring
-    else:
-        import_line = 0
     lines = source.split("\n")
     text = lines[h.line - 1] if 0 < h.line <= len(lines) else ""
     end = h.col + len(h.param)
@@ -352,7 +536,7 @@ def fix_for(source: str, h: Hint) -> Fix:
         snippet = (text[:end] + f": {annotation}" + rest).strip()
     else:
         snippet = f"{h.param}: {annotation}"
-    return Fix(annotation, imports, import_line, snippet)
+    return Fix(annotation, imports, inserts, snippet, runtime)
 
 
 def _shape_text(seed: list[str]) -> str:
@@ -362,13 +546,13 @@ def _shape_text(seed: list[str]) -> str:
 def axes_advice(h: Hint) -> str:
     if h.axes == "...":
         return 'one name per dimension, in order (e.g. `"batch seq"`)'
-    return "one name per dimension; rename them to match your data"
+    return "one name per dimension, in order; check the count and rename them to match your data"
 
 
 def hint_text(h: Hint, fix: Fix | None = None) -> str:
     """The editor message: what to annotate, why, and exactly what to write."""
     if fix is None:
-        fix = Fix(f'Shaped[Tensor, "{h.axes}"]', [], 0, f'{h.param}: Shaped[Tensor, "{h.axes}"]')
+        fix = Fix(f'Shaped[Tensor, "{h.axes}"]', [], [], f'{h.param}: Shaped[Tensor, "{h.axes}"]')
     if h.seed:
         why = (
             f"`{h.param}` is {_shape_text(h.seed)} here; each `int` is a size of the incoming data, "
@@ -384,7 +568,15 @@ def hint_text(h: Hint, fix: Fix | None = None) -> str:
             f"nothing in this file calls {h.where}, so tensi can't tell what shape `{h.param}` has "
             "and tensors computed from it show no shape"
         )
-    need = f" It needs `{'`, `'.join(fix.imports)}` (jaxtyping installed in your project)." if fix.imports else ""
+    if not fix.imports:
+        need = ""
+    elif fix.runtime:
+        need = f" It needs `{'`, `'.join(fix.imports)}`."
+    else:
+        need = (
+            " jaxtyping isn't installed in this project, so the fix imports it for type checking only "
+            "(`if TYPE_CHECKING:`): your code runs without it."
+        )
     return (
         f"Annotate `{h.param}` to shape {h.where}: {why}. Write `{fix.snippet}` ({axes_advice(h)}; a size "
         f"name from `__init__` such as `n_embd` links to it, a number fixes a size).{need} "

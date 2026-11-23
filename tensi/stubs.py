@@ -551,7 +551,19 @@ def build(upstream: Path, dest: Path) -> tuple[list[str], list[str]]:
         f.write_text(out, encoding="utf-8")
         applied.append(p.name)
     (dest / "PATCHES").write_text("applied: " + " ".join(applied) + "\nskipped: " + " ".join(skipped) + "\n")
+    (dest / "_tensi_shadow.pyi").write_text(SHADOW_HELPERS, encoding="utf-8")
     return applied, skipped
+
+
+# Helpers only tensi's rewritten copy of a file imports (never the user's code).
+SHADOW_HELPERS = """from typing import TypeVar
+
+_T = TypeVar("_T")
+
+def keep(value: _T, result: object) -> _T:
+    \"\"\"`x = x + h` with `h` unknown: a residual keeps x's shape.\"\"\"
+    ...
+"""
 
 
 def overlay_dir() -> Path | None:

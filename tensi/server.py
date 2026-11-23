@@ -887,11 +887,10 @@ class Proxy:
             text = lines[line] if line < len(lines) else ""
             return len(text[:cp].encode("utf-16-le")) // 2
 
-        edits, imports, import_line = [], {}, 0
+        edits, inserts = [], {}
         for h in hints:
-            fix = fix_for(doc.user_text, h)
-            import_line = fix.import_line
-            imports.update(dict.fromkeys(fix.imports))
+            fix = fix_for(doc.user_text, h, uri_to_path(doc.uri))
+            inserts.update(dict.fromkeys(fix.inserts))
             start = h.col + len(h.param)
             end = h.ann_end if h.ann_end >= 0 else start
             edits.append(
@@ -903,9 +902,9 @@ class Proxy:
                     "newText": f": {fix.annotation}",
                 }
             )
-        if imports:
-            at = {"line": import_line, "character": 0}
-            edits.append({"range": {"start": at, "end": at}, "newText": "".join(f"{i}\n" for i in imports)})
+        for line, text in inserts:
+            at = {"line": line, "character": 0}
+            edits.append({"range": {"start": at, "end": at}, "newText": text})
         return edits
 
     def code_actions(self, params: dict) -> list:
@@ -920,7 +919,7 @@ class Proxy:
         for h in doc.hints:
             if not (first <= h.line - 1 <= last):
                 continue
-            fix = fix_for(doc.user_text, h)
+            fix = fix_for(doc.user_text, h, uri_to_path(doc.uri))
             match = [d for d in diags if d["range"]["start"]["line"] == h.line - 1]
             out.append(
                 {
@@ -966,7 +965,7 @@ class Proxy:
         if mine:
             parts = []
             for h in mine:
-                fix = fix_for(doc.user_text, h)
+                fix = fix_for(doc.user_text, h, uri_to_path(doc.uri))
                 parts.append(f"```python\n{fix.snippet}\n```")
             names = ", ".join(f"`{h.param}`" for h in mine)
             value = (
@@ -1071,7 +1070,7 @@ class Proxy:
                         "severity": 3,
                         "source": "tensi",
                         "code": "annotate-input",
-                        "message": hint_text(h, fix_for(doc.user_text, h)),
+                        "message": hint_text(h, fix_for(doc.user_text, h, uri_to_path(doc.uri))),
                     }
                 )
         out = {"uri": uri, "diagnostics": diags}

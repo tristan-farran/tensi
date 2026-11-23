@@ -1211,6 +1211,68 @@ class _Rewriter:
                     self._edit((l1, c1), (l1, c1), "int(")
                     self._edit((l2, c2), (l2, c2), ")")
 
+    def _opaque_dict_item_calls(self):
+        """`for blk in self.blocks: h = blk["ln"](x)` with each `blk` an `nn.ModuleDict({"ln": ..., "c1":
+        ...})`: Pyrefly types `blk["ln"]` as the union of every value, so `h` is the output of whichever
+        layer it guesses (a conv's shape under a norm's name) and `x + h` can read as a mismatch. The
+        honest answer is "unknown": `_ts_cast(_ts_Any, ...)` makes `h` shapeless and keeps `x` as it was.
+        Only string-keyed calls on a plain local (a loop item) are touched; `self.A["k"]` keeps the
+        per-key types `_rewrite_module_dicts` gives it."""
+        if self.tree is None:
+            return
+        opaque: set[int] = set()
+        for node in ast.walk(self.tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Subscript)):
+                continue
+            sub = node.func
+            if not (
+                isinstance(sub.value, ast.Name)
+                and sub.value.id != "self"
+                and isinstance(sub.slice, ast.Constant)
+                and isinstance(sub.slice.value, str)
+            ):
+                continue
+            if not self._claim(node):
+                continue
+            (l1, c1), (l2, c2) = self._ast_span(node)
+            if l1 != l2:
+                continue
+            self._edit((l1, c1), (l1, c1), "_ts_cast(_ts_Any, ")
+            self._edit((l2, c2), (l2, c2), ")")
+            self.extra_imports["_ts_cast"] = "from typing import cast as _ts_cast"
+            self.extra_imports["_ts_Any"] = "from typing import Any as _ts_Any"
+            opaque.add(id(node))
+        # `x = x + h` with `h` from such a call: a residual keeps x's shape, which an unknown `h`
+        # would otherwise erase (and every shape after it)
+        for fn in [n for n in ast.walk(self.tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            unknown: set[str] = set()
+            for st in ast.walk(fn):
+                if isinstance(st, ast.Assign) and any(id(n) in opaque for n in ast.walk(st.value)):
+                    unknown |= {t.id for t in st.targets if isinstance(t, ast.Name)}
+            if not unknown:
+                continue
+            for st in ast.walk(fn):
+                if not (
+                    isinstance(st, ast.Assign)
+                    and len(st.targets) == 1
+                    and isinstance(st.targets[0], ast.Name)
+                    and isinstance(st.value, ast.BinOp)
+                    and isinstance(st.value.op, (ast.Add, ast.Sub, ast.Mult))
+                    and isinstance(st.value.left, ast.Name)
+                    and st.value.left.id == st.targets[0].id
+                    and st.targets[0].id not in unknown
+                    and any(isinstance(n, ast.Name) and n.id in unknown for n in ast.walk(st.value.right))
+                ):
+                    continue
+                if not self._claim(st.value):
+                    continue
+                (l1, c1), (l2, c2) = self._ast_span(st.value)
+                if l1 != l2:
+                    continue
+                self._edit((l1, c1), (l1, c1), f"_ts_keep({st.targets[0].id}, ")
+                self._edit((l2, c2), (l2, c2), ")")
+                self.extra_imports["_ts_keep"] = "from _tensi_shadow import keep as _ts_keep"
+
     def _widen_pow_literals(self):
         """Pyrefly 1.5.0 evaluates `x ** 2` with an int-literal exponent as `int` arithmetic (it lets a
         tensor stand in for an int), so `(x ** 2).sum(1)` lost its shape; `x ** 0.5` and `x ** n`
@@ -2067,6 +2129,7 @@ class _Rewriter:
         self._wrap_minmax_sizes()
         self._int_config_sizes()
         self._widen_pow_literals()
+        self._opaque_dict_item_calls()
         self._widen_literal_choices()
         self._absolutize_relative_imports()
         if shape_edits:

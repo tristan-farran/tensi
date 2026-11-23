@@ -872,10 +872,14 @@ def _reconcile(specs: list[list[str]]) -> list[str] | None:
         return None
     out = []
     for col in zip(*specs):
+        names = [c for c in col if c.startswith("~")]
         if len(set(col)) == 1:
             out.append(col[0])
-        elif all(c.startswith("~") for c in col):
-            out.append(col[0])
+        elif names and all(c.startswith("~") or c == "int" or _INT_TOKEN_RE.fullmatch(c) for c in col):
+            # one caller names the axis (`batch` from an annotation), another only knows `int`: the
+            # seed's fresh names are type parameters of the callee, so each call binds its own size
+            # and the name costs the unnamed callers nothing
+            out.append(names[0])
         else:
             out.append("int")
     return out
@@ -1210,6 +1214,14 @@ def _shadow_fn_at(tree: ast.AST, line: int):
     return best
 
 
+def _annotated_name(tok: str, seeds: dict, caller_cls: str | None, caller_fn: str) -> bool:
+    """A fresh name the caller has from the user's own annotation (`idx: Shaped[Tensor, "batch seq"]`),
+    not from tensi's seeds: it is the user's name, so a mismatch must not rename it away."""
+    if not tok.startswith("~"):
+        return False
+    return not any(tok in v for k, v in seeds.items() if k[:2] == (caller_cls or "", caller_fn))
+
+
 def solve(
     path: str | Path,
     source: str | None = None,
@@ -1371,7 +1383,9 @@ def solve(
                         for t in v
                         if origin.get(k) == "local" or t in named_toks.get(k, ())
                     }
-                    named_toks[key] |= {t for t in toks if t in caller_named}
+                    named_toks[key] |= {
+                        t for t in toks if t in caller_named or _annotated_name(t, seeds, caller_cls, caller_fn)
+                    }
                     specs[key].append(toks)
                 continue
             if callee is None or not callee.type:
@@ -1422,7 +1436,9 @@ def solve(
                     for t in v
                     if origin.get(k) == "local" or t in named_toks.get(k, ())
                 }
-                named_toks[(cname, "forward", pname)] |= {t for t in toks if t in caller_named}
+                named_toks[(cname, "forward", pname)] |= {
+                    t for t in toks if t in caller_named or _annotated_name(t, seeds, caller_cls, caller_fn)
+                }
                 specs[(cname, "forward", pname)].append(toks)
         for key, sp in specs.items():
             r = _reconcile(sp)

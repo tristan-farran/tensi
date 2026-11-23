@@ -12,6 +12,17 @@
   Hovering a tensor tensi can't shape says which input it depends on and what to write, instead of
   showing nothing. The status bar counts the inputs to annotate.
 * `tensi peek` ends with the same list: each input, the line to write, and the import to add once.
+* No jaxtyping in your project? The fix imports it under `if TYPE_CHECKING:` (with `from __future__
+  import annotations` before Python 3.14), so the code runs without it; with jaxtyping installed it
+  is a normal import.
+* Suggested axes are safe to accept: the number of dimensions comes from the code (where the input
+  is passed, unpacked, transposed or interpolated), and several inputs of one function share their
+  leading names (`x` "batch seq dim", `mask` "batch seq"). Accepting every suggestion in three real
+  projects gives no shape errors.
+* An annotated input's axis names reach the helpers it is passed to (`self._conv_stack(x)`), even
+  when another caller only knows `int`; they used to turn into `int` at the first helper.
+* A call through a `ModuleDict` loop item (`blk["ln"](x)`) is unknown instead of a guess among the
+  dict's layers, which could read as a mismatch; a residual `x = x + h` keeps x's shape.
 
 ## 0.3.5
 
