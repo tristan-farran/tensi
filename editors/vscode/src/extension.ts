@@ -321,13 +321,18 @@ async function offerUpdate(cmd: string[], python: string | undefined): Promise<v
   }
 }
 
-function setStatus(state: "starting" | "solving" | "ready" | "off", detail = ""): void {
+function setStatus(state: "starting" | "solving" | "ready" | "off", detail = "", toAnnotate = 0): void {
   const icon = { starting: "$(sync~spin)", solving: "$(sync~spin)", ready: "$(symbol-array)", off: "$(warning)" }[state];
-  status.text = `${icon} tensi`;
+  const pending = state === "ready" && toAnnotate > 0;
+  status.text = pending ? `${icon} tensi: ${toAnnotate} to annotate` : `${icon} tensi`;
   status.tooltip = {
     starting: "tensi is starting",
     solving: `tensi is working out shapes${detail ? ` in ${detail}` : ""}; hovers fill in when it's done`,
-    ready: `tensi is ready${detail ? `: ${detail}` : ""}. Click to check the setup.`,
+    ready: pending
+      ? `${toAnnotate} input${toAnnotate === 1 ? "" : "s"} in ${detail} need a shape annotation: their shape comes ` +
+        "from outside the file, so tensors computed from them show none. Each one has a blue hint with the exact " +
+        "line to write and a quick fix (Ctrl+. / Cmd+.) that writes it."
+      : `tensi is ready${detail ? `: ${detail}` : ""}. Click to check the setup.`,
     off: `tensi is not running${detail ? `: ${detail}` : ""}. Click to check the setup.`,
   }[state];
   status.show();
@@ -366,9 +371,13 @@ async function start(): Promise<void> {
     outputChannel: output,
   };
   client = new LanguageClient("tensi", "tensi", serverOptions, clientOptions);
-  client.onNotification("$/tensi/status", (p: { uri?: string; state?: string }) => {
+  client.onNotification("$/tensi/status", (p: { uri?: string; state?: string; toAnnotate?: number }) => {
     const name = p.uri ? path.basename(vscode.Uri.parse(p.uri).fsPath) : "";
-    setStatus(p.state === "solving" ? "solving" : "ready", name);
+    const active = vscode.window.activeTextEditor?.document.uri.toString();
+    if (p.uri && active && p.uri !== active && p.state !== "solving") {
+      return; // a background file: keep showing the one in front
+    }
+    setStatus(p.state === "solving" ? "solving" : "ready", name, p.toAnnotate ?? 0);
   });
   await client.start();
   setStatus("ready", python ? `using ${python}` : "");

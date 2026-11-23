@@ -148,8 +148,10 @@ def test_peek_vitlike_zero_annotations():
 
 def test_peek_names_the_input_that_needs_an_annotation():
     out = " ".join(run("peek", "norms.py").stdout.split())
-    assert "annotate the input of: 29 Broken.forward(x)" in out, out
-    assert "Encoder.forward" not in out.split("annotate the input of:")[1]  # shaped from x.shape
+    hints = out.split("Annotate it:")[1]
+    assert '29 Broken.forward(x) def forward(self, x: Shaped[torch.Tensor, "batch seq"]):' in hints, out
+    assert "add once: from jaxtyping import Shaped" in hints, out
+    assert "Encoder.forward" not in hints  # shaped from x.shape
 
 
 def test_local_shape_unpack_names_dims(tmp_path):
@@ -198,7 +200,9 @@ def test_helper_functions_follow_their_callers():
     out = " ".join(run("peek", "helpers.py").stdout.split())
     assert "15 pe [h * w, 4 * (dim // 4)]" in out, out
     assert "29 pe [int, dim]" in out and "30 x [b, int, dim]" in out, out  # not [?]: `x + pe` keeps its shape
-    assert 'Net.forward(img) e.g. img: Shaped[Tensor, "b c height width"] (now [b, c, int, int])' in out
+    assert (
+        'Net.forward(img) now [b, c, int, int] def forward(self, img: Shaped[torch.Tensor, "b c height width"]):' in out
+    )
     assert run("check", "helpers.py").returncode == 0
     for seed in ("1", "2", "3"):  # edits at one position must not depend on hash order
         env = {**__import__("os").environ, "NO_COLOR": "1", "PYTHONHASHSEED": seed}
@@ -222,9 +226,13 @@ def test_ordinary_style_modules_name_their_shapes():
     assert "34 out [int, inplanes, int, int]" in out, out
     assert "45 x [..., dim]" in out, out
     # hints name the feature axis from the first layer that reads the input, through user modules too
-    assert 'Mlp.forward(x) e.g. x: Shaped[Tensor, "batch seq in_features"]' in out, out
-    assert 'Head.forward(x) e.g. x: Shaped[Tensor, "batch seq dim"]' in out, out
-    assert 'BasicBlock.forward(x) e.g. x: Shaped[Tensor, "batch inplanes height width"]' in out, out
+    hints = out.split("Annotate them:")[1]
+    assert "Mlp.forward" not in hints, out  # Head builds and feeds it: annotating Head's input shapes it
+    assert 'Head.forward(x) def forward(self, x: Shaped[torch.Tensor, "batch seq dim"]):' in hints, out
+    assert (
+        'BasicBlock.forward(x) now [int, inplanes, int, int] def forward(self, x: Shaped[torch.Tensor, "batch inplanes '
+        'height width"]) -> torch.Tensor:'
+    ) in hints, out
     assert run("check", "general.py").returncode == 0
 
 
@@ -339,3 +347,41 @@ def test_sizes_from_config_objects_keep_shapes():
     assert "self.L = int(sum(self.levels))" in shadow and "P = int(config.prefix_len)" in shadow
     assert "z**int(2)" in shadow
     assert run("check", "configsizes.py").returncode == 0
+
+
+def test_hints_cover_every_input_that_needs_an_annotation():
+    """Roots only: a module another module here builds is shaped through that one; a helper nothing
+    calls gets its own hint with a rank read from the body; the fix spells the file's own imports."""
+    from tensi.hints import fix_for, unshaped_inputs
+
+    src = (
+        "import torch\n"
+        "from torch import nn\n"
+        "\n"
+        "def rope(positions, dim):\n"
+        "    return positions.float()[:, None] * torch.arange(dim)[None, :]\n"
+        "\n"
+        "class Inner(nn.Module):\n"
+        "    def forward(self, x):\n"
+        "        return x\n"
+        "\n"
+        "class Outer(nn.Module):\n"
+        "    def __init__(self):\n"
+        "        super().__init__()\n"
+        "        self.inner = Inner()\n"
+        "    def forward(self, x, targets):\n"
+        "        return self.inner(x), targets.view(-1)\n"
+        "\n"
+        "class Base(nn.Module):\n"
+        "    def forward(self, inputs):\n"
+        "        raise NotImplementedError\n"
+    )
+    hints = unshaped_inputs(src, {})
+    assert [(h.where, h.param, h.axes) for h in hints] == [
+        ("rope", "positions", "n"),
+        ("Outer.forward", "x", "batch seq"),
+        ("Outer.forward", "targets", "batch seq"),
+    ], hints
+    fix = fix_for(src, hints[0])
+    assert fix.snippet == 'def rope(positions: Shaped[torch.Tensor, "n"], dim):', fix
+    assert fix.imports == ["from jaxtyping import Shaped"] and fix.import_line == 2, fix

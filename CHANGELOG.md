@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.6
+
+* tensi says exactly what to annotate, and how. Every input whose shape comes from outside the file
+  gets a hint: module inputs nothing in the file shapes, and tensor parameters of helpers nothing in
+  the file calls. Modules another module here already feeds are skipped: annotating the outer one
+  shapes them. Each hint gives the signature line to write in the file's own spelling (`torch.Tensor`
+  or `Tensor`), the import it still needs, and how to name axes.
+* Editor: the hint is a visible information squiggle (it was a faint hint), with a quick fix that
+  writes the annotation and its import, and a source action that annotates every input in the file.
+  Hovering a tensor tensi can't shape says which input it depends on and what to write, instead of
+  showing nothing. The status bar counts the inputs to annotate.
+* `tensi peek` ends with the same list: each input, the line to write, and the import to add once.
+
 ## 0.3.5
 
 * Sizes read from a plain config object keep shapes. `self.n_head = config.n_head`, `P =

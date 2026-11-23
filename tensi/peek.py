@@ -11,10 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import pyrefly, stubs
+from .hints import unshaped_inputs
 from .mapping import clean_display
 from .rewrite import rewrite
 from .scratch import scratch_copy
-from .seeds import solve, unshaped_inputs
+from .seeds import solve
 
 
 @dataclass

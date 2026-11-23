@@ -162,15 +162,47 @@ def cmd_peek(path: str) -> int:
         names = ", ".join(r.names)
         print(f"  {st.dim(f'{r.line:>4}')}  {names:<{width}}  {color_shape(r.shape, st)}")
     named = sum(1 for r in rows if is_fully_named(r.shape))
-    print(f"\n  {len(rows)} tensors, {st.violet(str(named))} fully named")
+    unknown = sum(1 for r in rows if "?" in r.shape)
+    summary = f"{len(rows)} tensors, {st.violet(str(named))} fully named"
+    print(f"\n  {summary}" + (f", {unknown} unknown" if unknown else ""))
     hints = getattr(rows, "hints", [])
     if hints:
-        print(f"\n  {st.dim('to name more, annotate the input of:')}")
-        for h in hints:
-            example = f'e.g. {h.param}: Shaped[Tensor, "{h.axes}"]'
-            known = f"  (now {'[' + ', '.join(t.lstrip('~') for t in h.seed) + ']'})" if h.seed else ""
-            print(f"  {st.dim(f'{h.line:>4}')}  {h.cls}.forward({h.param})  {st.dim(example + known)}")
+        print_hints(hints, "\n".join(src), st, unknown)
     return 0
+
+
+def print_hints(hints, source: str, st, unknown: int) -> None:
+    """What to annotate and exactly what to write: the input, the signature as it would read, and
+    the import it needs once per file."""
+    from .hints import fix_for
+
+    n = len(hints)
+    lead = (
+        f"{unknown} shape{'s are' if unknown != 1 else ' is'} unknown" if unknown else "Shapes here are partly unnamed"
+    )
+    print(
+        f"\n  {lead} because {'these inputs come' if n != 1 else 'this input comes'} from outside this file."
+        f" Annotate {'them' if n != 1 else 'it'}:\n"
+    )
+    imports: dict[str, None] = {}
+    for h in hints:
+        fix = fix_for(source, h)
+        imports.update(dict.fromkeys(fix.imports))
+        known = f"  {st.dim('now ' + '[' + ', '.join(t.lstrip('~') for t in h.seed) + ']')}" if h.seed else ""
+        print(f"  {st.dim(f'{h.line:>4}')}  {h.where}({h.param}){known}")
+        print(f"        {st.violet(fix.snippet)}")
+    print()
+    if imports:
+        print(
+            f"  {st.dim('add once:')} {'; '.join(imports)}  {st.dim('(jaxtyping must be installed in your project)')}"
+        )
+    print(
+        st.dim(
+            "  One name per dimension, in order. A size name from __init__ (like n_embd) links that axis to the\n"
+            "  layer sizes; a number fixes it; any other name is a new size. Shaped accepts any dtype\n"
+            "  (Float/Int/Bool from jaxtyping work too)."
+        )
+    )
 
 
 def is_fully_named(shape: str) -> bool:

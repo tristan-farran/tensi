@@ -4,7 +4,7 @@ import os
 import shutil
 import sys
 
-__version__ = "0.3.5"
+__version__ = "0.3.6"
 PYREFLY_VERSION = "1.5.0"  # must match the pins in pyproject.toml
 
 

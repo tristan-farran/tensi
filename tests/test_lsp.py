@@ -400,12 +400,25 @@ def test_patched_stubs_reach_the_language_server(client, ws):
     text = (ws / "norms.py").read_text()
     assert norm("flipped: Tensor[[b, width, t]]") in norm(client.hover_text(uri, *pos(text, "        flipped = ", 8)))
     assert norm("pad: Tensor[[b, 1, width]]") in norm(client.hover_text(uri, *pos(text, "        pad = ", 8)))
-    msgs = sorted(d["message"] for d in diags if d.get("severity") != 4)
+    msgs = sorted(d["message"] for d in diags if d.get("code") != "annotate-input")
     assert len(msgs) == 2 and "num_features does not match" in msgs[1], msgs
     hints = [d for d in diags if d.get("code") == "annotate-input"]
     # Broken.forward(x) has no caller and no size unpack: the one place an annotation would help
-    assert len(hints) == 1 and "`x`" in hints[0]["message"] and hints[0]["severity"] == 4, hints
+    assert len(hints) == 1 and "`x`" in hints[0]["message"] and hints[0]["severity"] == 3, hints
     assert hints[0]["range"]["start"] == {"line": 28, "character": 22}
+    assert 'def forward(self, x: Shaped[torch.Tensor, "batch seq"]):' in hints[0]["message"], hints
+    # the quick fix replaces the bare `torch.Tensor` and adds the import once
+    rng = {"start": {"line": 28, "character": 22}, "end": {"line": 28, "character": 23}}
+    actions = client.request(
+        "textDocument/codeAction",
+        {"textDocument": {"uri": uri}, "range": rng, "context": {"diagnostics": hints}},
+    )
+    fix = next(a for a in actions if a["kind"] == "quickfix")
+    edits = fix["edit"]["changes"][uri]
+    assert fix["title"] == 'tensi: annotate `x` as Shaped[torch.Tensor, "batch seq"]', fix
+    span = {"start": {"line": 28, "character": 23}, "end": {"line": 28, "character": 37}}  # `: torch.Tensor`
+    assert {"newText": ': Shaped[torch.Tensor, "batch seq"]', "range": span} in edits, edits
+    assert any(e["newText"] == "from jaxtyping import Shaped\n" for e in edits), edits
 
 
 def test_unsaved_edit_to_an_imported_file_updates_hovers(client, ws):
@@ -460,3 +473,21 @@ def test_big_workspace_does_not_block_startup(tmp_path):
         assert norm("Tensor[[batch_size, hidden]]") in norm(hover), hover
     finally:
         c.close()
+
+
+def test_hovering_an_unknown_tensor_says_what_to_annotate(client, ws):
+    """A tensor tensi can't shape gets a hover naming the input it depends on and the line to write,
+    instead of nothing."""
+    uri = client.open(ws / "norms.py")
+    client.diagnostics(uri, timeout=30)
+    text = (ws / "norms.py").read_text()
+    deadline, h = time.time() + 20, ""
+    while time.time() < deadline:
+        h = (
+            client.hover_text(uri, *pos(text, "    def forward(self, x: torch.Tensor):", len("    def forward(self, ")))
+            or ""
+        )
+        if "tensi" in h:
+            break
+        time.sleep(0.5)
+    assert "shape unknown" in h and 'x: Shaped[torch.Tensor, "batch seq"]' in h, h

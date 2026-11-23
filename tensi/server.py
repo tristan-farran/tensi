@@ -10,6 +10,7 @@ inlay hints, so it can run beside Pylance / basedpyright without duplicating the
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -24,9 +25,10 @@ from urllib.request import url2pathname
 
 from . import PYREFLY_VERSION, env, stubs, update
 from .cli import drop_imprecise, is_rewrite_artifact, is_shape_diagnostic
+from .hints import fix_for, hint_text, unshaped_inputs
 from .mapping import PositionMap, clean_json
 from .rewrite import find_config_classes, rewrite
-from .seeds import hint_text, solve, unshaped_inputs
+from .seeds import solve
 
 PYREFLY_SETTINGS = {"typeCheckingMode": "default", "displayTypeErrors": "force-on"}
 SKIP_DIRS = {
@@ -325,6 +327,7 @@ class Proxy:
         self.tree_timers: dict[str, threading.Timer] = {}
         self.seeds: dict[str, dict] = {}  # uri -> solved seeds
         self.pcounter = 0
+        self.hover_pos: dict = {}  # hover request id -> the editor's position
         self.solve_queue: list[str] = []
         self.solve_cv = threading.Condition()
         threading.Thread(target=self.solver_loop, daemon=True).start()
@@ -507,7 +510,11 @@ class Proxy:
             return
 
         if method == "textDocument/hover":
+            self.hover_pos[msg["id"]] = msg["params"]["position"]
             self.forward_positional(msg, "hover")
+            return
+        if method == "textDocument/codeAction":
+            self.editor.write({"jsonrpc": "2.0", "id": msg["id"], "result": self.code_actions(msg["params"])})
             return
         if method == "textDocument/inlayHint":
             if not self.settings.inlay_hints:
@@ -748,7 +755,12 @@ class Proxy:
             {
                 "jsonrpc": "2.0",
                 "method": "$/tensi/status",
-                "params": {"uri": uri, "state": "ready", "seeds": len(seeds)},
+                "params": {
+                    "uri": uri,
+                    "state": "ready",
+                    "seeds": len(seeds),
+                    "toAnnotate": len(self.docs[uri].hints) if uri in self.docs else 0,
+                },
             }
         )
 
@@ -810,7 +822,11 @@ class Proxy:
                 self.ready.set()
                 msg = {**msg, "result": self.editor_init_result(msg.get("result") or {})}
             elif kind == "hover":
-                msg = {**msg, "result": self.fix_hover(msg.get("result"), pm)}
+                result = self.fix_hover(msg.get("result"), pm)
+                pos = self.hover_pos.pop(rid, None)
+                if result is None and pos is not None:
+                    result = self.unknown_shape_hover(msg.get("result"), uri, pos)
+                msg = {**msg, "result": result}
             elif kind == "inlayHint":
                 msg = {**msg, "result": self.fix_inlay(msg.get("result"), pm)}
             self.editor.write(msg)
@@ -854,12 +870,117 @@ class Proxy:
             "positionEncoding": "utf-16",
             "textDocumentSync": {"openClose": True, "change": 1, "save": {"includeText": False}},
             "hoverProvider": True,
+            "codeActionProvider": {"codeActionKinds": ["quickfix", "source"]},
         }
         if self.settings.inlay_hints:
             caps["inlayHintProvider"] = True
         from . import __version__
 
         return {"capabilities": caps, "serverInfo": {"name": "tensi", "version": __version__}}
+
+    # ---------- annotation hints: quick fixes and hovers ----------
+    def _hint_edits(self, doc: Doc, hints: list) -> list[dict]:
+        """TextEdits that annotate `hints` and add the imports they need, once."""
+        lines = doc.user_text.split("\n")
+
+        def u16(line: int, cp: int) -> int:
+            text = lines[line] if line < len(lines) else ""
+            return len(text[:cp].encode("utf-16-le")) // 2
+
+        edits, imports, import_line = [], {}, 0
+        for h in hints:
+            fix = fix_for(doc.user_text, h)
+            import_line = fix.import_line
+            imports.update(dict.fromkeys(fix.imports))
+            start = h.col + len(h.param)
+            end = h.ann_end if h.ann_end >= 0 else start
+            edits.append(
+                {
+                    "range": {
+                        "start": {"line": h.line - 1, "character": u16(h.line - 1, start)},
+                        "end": {"line": h.line - 1, "character": u16(h.line - 1, end)},
+                    },
+                    "newText": f": {fix.annotation}",
+                }
+            )
+        if imports:
+            at = {"line": import_line, "character": 0}
+            edits.append({"range": {"start": at, "end": at}, "newText": "".join(f"{i}\n" for i in imports)})
+        return edits
+
+    def code_actions(self, params: dict) -> list:
+        """A quick fix per input to annotate (on its hint), and one action for all of them."""
+        uri = params["textDocument"]["uri"]
+        doc = self.docs.get(uri)
+        if doc is None or not doc.hints:
+            return []
+        first, last = params["range"]["start"]["line"], params["range"]["end"]["line"]
+        diags = [d for d in params.get("context", {}).get("diagnostics", []) if d.get("code") == "annotate-input"]
+        out = []
+        for h in doc.hints:
+            if not (first <= h.line - 1 <= last):
+                continue
+            fix = fix_for(doc.user_text, h)
+            match = [d for d in diags if d["range"]["start"]["line"] == h.line - 1]
+            out.append(
+                {
+                    "title": f"tensi: annotate `{h.param}` as {fix.annotation}",
+                    "kind": "quickfix",
+                    "isPreferred": True,
+                    **({"diagnostics": match} if match else {}),
+                    "edit": {"changes": {uri: self._hint_edits(doc, [h])}},
+                }
+            )
+        if len(doc.hints) > 1:
+            out.append(
+                {
+                    "title": f"tensi: annotate all {len(doc.hints)} inputs in this file",
+                    "kind": "source",
+                    "edit": {"changes": {uri: self._hint_edits(doc, doc.hints)}},
+                }
+            )
+        return out
+
+    def unknown_shape_hover(self, result, uri: str | None, pos: dict) -> dict | None:
+        """Hovering a tensor tensi can't shape: say which input it depends on and what to write,
+        instead of showing nothing."""
+        doc = self.docs.get(uri) if uri else None
+        if not result or doc is None or not doc.hints:
+            return None
+        contents = result.get("contents")
+        text = contents.get("value", "") if isinstance(contents, dict) else json.dumps(contents)
+        if not re.search(r"\bTensor\b", text) or re.search(r"\bTensor\[\[", text):
+            return None
+        line = pos["line"] + 1
+        try:
+            tree = ast.parse(doc.user_text)
+        except SyntaxError:
+            return None
+        fns = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.lineno <= line <= (n.end_lineno or n.lineno)
+        ]
+        fn = max(fns, key=lambda n: n.lineno) if fns else None
+        mine = [h for h in doc.hints if fn is not None and h.def_line == fn.lineno]
+        if mine:
+            parts = []
+            for h in mine:
+                fix = fix_for(doc.user_text, h)
+                parts.append(f"```python\n{fix.snippet}\n```")
+            names = ", ".join(f"`{h.param}`" for h in mine)
+            value = (
+                f"**tensi: shape unknown.** It depends on {names}, whose shape comes from outside this file. "
+                "Annotate it (the quick fix on the hint writes this for you):\n\n" + "\n".join(parts)
+            )
+        else:
+            roots = ", ".join(f"{h.where}({h.param})" for h in doc.hints[:3]) + (" …" if len(doc.hints) > 3 else "")
+            value = (
+                "**tensi: shape unknown.** tensi couldn't work this one out. If it comes from an input of "
+                f"this file, annotating the inputs tensi flags ({roots}) shapes it: see their hints, or the "
+                'quick fix "annotate all inputs".'
+            )
+        return {"contents": {"kind": "markdown", "value": value}}
 
     # ---------- result fixers ----------
     def fix_hover(self, result, pm: PositionMap | None):
@@ -947,10 +1068,10 @@ class Proxy:
                             "start": {"line": line - 1, "character": c16},
                             "end": {"line": line - 1, "character": c16 + n16},
                         },
-                        "severity": 4,
+                        "severity": 3,
                         "source": "tensi",
                         "code": "annotate-input",
-                        "message": hint_text(h),
+                        "message": hint_text(h, fix_for(doc.user_text, h)),
                     }
                 )
         out = {"uri": uri, "diagnostics": diags}

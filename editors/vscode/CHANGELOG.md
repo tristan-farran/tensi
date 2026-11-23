@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.6
+
+* The status bar shows how many inputs in the open file need a shape annotation (`tensi: 3 to annotate`), and its tooltip says where to find them.
+
 ## 0.3.5
 
 * No changes to the extension; released alongside tensi 0.3.5.

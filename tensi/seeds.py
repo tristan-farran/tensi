@@ -27,7 +27,6 @@ import re
 import subprocess
 from collections import defaultdict
 from pathlib import Path
-from typing import NamedTuple
 
 from . import pyrefly, stubs
 from .rewrite import rewrite
@@ -1526,15 +1525,6 @@ def solve(
 # ------------------------------------------------------------------ hints
 
 
-class Hint(NamedTuple):
-    cls: str
-    param: str
-    line: int  # 1-based
-    col: int  # code points
-    seed: list[str] | None  # what tensi knows (`["~b", "channels", "int", "int"]`), None for nothing
-    axes: str  # suggested jaxtyping axes, e.g. "b channels height width"
-
-
 _FEATURE_LAYERS = {"Linear", "LayerNorm", "RMSNorm", "LazyLinear", "Bilinear"}
 
 
@@ -1617,87 +1607,3 @@ def _suggest_axes(seed: list[str] | None, feature: str | None = None) -> str:
 def _is_plain_base(b) -> bool:
     name = b.id if isinstance(b, ast.Name) else b.attr
     return name in ("object", "ABC", "Protocol", "Generic", "NamedTuple", "Enum", "Exception")
-
-
-def unshaped_inputs(source: str, seeds: dict[Key, list[str]] | None) -> list[Hint]:
-    """Module inputs where one annotation is the boundary annotation the module needs: a `forward`
-    input tensi could not shape from anything in the file (no caller, no `x.size()` unpack, no
-    einops pattern), or the input of a top-level module (one no other module in the file builds)
-    whose sizes are partly `int`, i.e. come from the data."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []
-    lines = source.split("\n")
-    seeds = seeds or {}
-    out = []
-    built_inside: set[str] = set()  # classes some other class constructs
-    for c in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-        for n in ast.walk(c):
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id != c.name:
-                built_inside.add(n.func.id)
-    classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
-    # modules: `nn.Module` subclasses, and subclasses of those defined in this file
-    modules: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for c in classes.values():
-            has_forward = any(isinstance(f, ast.FunctionDef) and f.name == "forward" for f in c.body)
-            if c.name not in modules and any(
-                (isinstance(b, ast.Attribute) and b.attr.endswith("Module"))
-                or (isinstance(b, ast.Name) and (b.id.endswith("Module") or b.id in modules))
-                # an imported base (`class GPT(Transformer)`) with a `forward` of its own
-                or (has_forward and isinstance(b, (ast.Name, ast.Attribute)) and not _is_plain_base(b))
-                for b in c.bases
-            ):
-                modules.add(c.name)
-                changed = True
-    for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-        if cls.name not in modules:
-            continue
-        fwd = next(
-            (f for f in cls.body if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name == "forward"),
-            None,
-        )
-        if fwd is None:
-            continue
-        pos = fwd.args.posonlyargs + fwd.args.args
-        if len(pos) < 2:
-            continue
-        a = pos[1]
-        defaults = dict(zip([x.arg for x in pos[len(pos) - len(fwd.args.defaults) :]], fwd.args.defaults))
-        d = defaults.get(a.arg)
-        if d is not None and not (isinstance(d, ast.Constant) and d.value is None):
-            continue
-        if a.annotation is not None and not (
-            isinstance(a.annotation, (ast.Name, ast.Attribute))
-            and (getattr(a.annotation, "id", None) or a.annotation.attr) == "Tensor"
-        ):
-            continue
-        seed = seeds.get((cls.name, "forward", a.arg))
-        if seed and ("int" not in seed or cls.name in built_inside):
-            continue
-        col = len(lines[a.lineno - 1].encode("utf-8")[: a.col_offset].decode("utf-8", errors="replace"))
-        feature = None if seed else _feature_axis(cls, fwd, a.arg, classes)
-        out.append(Hint(cls.name, a.arg, a.lineno, col, seed or None, _suggest_axes(seed, feature)))
-    return out
-
-
-def _shape_text(seed: list[str]) -> str:
-    return "[" + ", ".join(t.lstrip("~") for t in seed) + "]"
-
-
-def hint_text(h: Hint) -> str:
-    example = f'`{h.param}: Shaped[Tensor, "{h.axes}"]`'
-    if h.seed:
-        return (
-            f"`{h.param}` is {_shape_text(h.seed)} here: each `int` is a size of the data itself, which "
-            f"nothing in this file fixes. Annotating the input names them, e.g. {example} (use your "
-            f"own axis names), and {h.cls}.forward carries those names from there on."
-        )
-    return (
-        f"tensi can't tell what shape `{h.param}` has: nothing in this file passes it, unpacks its size "
-        f"or names its axes. One jaxtyping annotation, e.g. {example} with your own axis names, "
-        f"shapes {h.cls}.forward from there on."
-    )

@@ -2,7 +2,7 @@
   "name": "tensi",
   "displayName": "tensi",
   "description": "Hover any PyTorch tensor to see its shape, with every dimension named after the variable that sized it. Shape errors underlined. No annotations needed.",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "publisher": "TristanFarran",
   "license": "MIT",
   "engines": {
